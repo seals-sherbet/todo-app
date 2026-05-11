@@ -215,6 +215,7 @@ button:focus-visible {
   justify-content: flex-end;
   border: 0;
   background: transparent;
+  margin-bottom: 8px;
   padding: 0;
 }
 
@@ -262,7 +263,7 @@ button:focus-visible {
 }
 
 .list-section {
-  margin-top: 8px;
+  margin-top: 12px;
 }
 
 .list-board {

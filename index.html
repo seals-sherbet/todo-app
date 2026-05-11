@@ -29,15 +29,6 @@
         <ul id="todayBoard" class="list-board today-board"></ul>
       </section>
 
-      <section class="composer" aria-label="Create a standing list">
-        <form id="listForm" class="list-form" autocomplete="off">
-          <label class="field">
-            <input id="listName" name="name" type="text" placeholder="New list" aria-label="New list name" required maxlength="80">
-          </label>
-          <button class="primary-button" type="submit">Add List</button>
-        </form>
-      </section>
-
       <section class="controls filter-control" aria-label="Task controls">
         <div class="filter-menu-shell">
           <button class="filter-menu-button" id="filterMenuButton" type="button" aria-haspopup="menu" aria-controls="filterMenu" aria-expanded="false">
@@ -50,6 +41,15 @@
             <button class="menu-link filter-menu-item" type="button" data-filter="completed" role="menuitemradio" aria-checked="false">Done</button>
           </div>
         </div>
+      </section>
+
+      <section class="composer" aria-label="Create a standing list">
+        <form id="listForm" class="list-form" autocomplete="off">
+          <label class="field">
+            <input id="listName" name="name" type="text" placeholder="New list" aria-label="New list name" required maxlength="80">
+          </label>
+          <button class="primary-button" type="submit">Add List</button>
+        </form>
       </section>
 
       <section class="list-section" aria-label="Standing lists">
