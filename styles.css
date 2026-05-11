@@ -947,6 +947,15 @@ button:focus-visible {
 }
 
 @media (max-width: 680px) {
+  input,
+  select,
+  textarea,
+  .list-rename-input,
+  .inline-task-form input[name="title"],
+  .tomorrow-form input {
+    font-size: 16px;
+  }
+
   .app-shell {
     padding-left: 10px;
     padding-right: 10px;
