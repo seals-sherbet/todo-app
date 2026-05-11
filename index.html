@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#f7f4ee">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="Tasks">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <title>Tasks</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="todayLabel"></p>
+          <h1>Tasks</h1>
+        </div>
+        <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme">
+          <span aria-hidden="true">Theme</span>
+        </button>
+      </header>
+
+      <section class="today-section" aria-label="Today list">
+        <ul id="todayBoard" class="list-board today-board"></ul>
+      </section>
+
+      <section class="composer" aria-label="Create a standing list">
+        <form id="listForm" class="list-form" autocomplete="off">
+          <label class="field">
+            <input id="listName" name="name" type="text" placeholder="New list" aria-label="New list name" required maxlength="80">
+          </label>
+          <button class="primary-button" type="submit">Add List</button>
+        </form>
+      </section>
+
+      <section class="controls filter-control" aria-label="Task controls">
+        <div class="filter-menu-shell">
+          <button class="filter-menu-button" id="filterMenuButton" type="button" aria-haspopup="menu" aria-controls="filterMenu" aria-expanded="false">
+            <span class="filter-menu-prefix">View</span>
+            <span id="filterMenuLabel">All</span>
+          </button>
+          <div class="filter-menu" id="filterMenu" role="menu" aria-label="Filter tasks" hidden>
+            <button class="menu-link filter-menu-item is-active" type="button" data-filter="all" role="menuitemradio" aria-checked="true">All</button>
+            <button class="menu-link filter-menu-item" type="button" data-filter="active" role="menuitemradio" aria-checked="false">Open</button>
+            <button class="menu-link filter-menu-item" type="button" data-filter="completed" role="menuitemradio" aria-checked="false">Done</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="list-section" aria-label="Standing lists">
+        <ul id="listBoard" class="list-board"></ul>
+        <div id="emptyState" class="empty-state" hidden>
+          <h2>No lists here</h2>
+          <p>Add a list or choose another view.</p>
+        </div>
+      </section>
+
+      <section class="tomorrow-section" aria-label="Tomorrow queue">
+        <button class="tomorrow-toggle" id="tomorrowToggle" type="button" aria-expanded="true" aria-controls="tomorrowBody">
+          <span>Tomorrow</span>
+          <span id="tomorrowCount">0 queued</span>
+        </button>
+        <div class="tomorrow-body" id="tomorrowBody">
+          <ul class="tomorrow-list" id="tomorrowList"></ul>
+          <form class="tomorrow-form" id="tomorrowForm" autocomplete="off">
+            <input id="tomorrowInput" name="title" type="text" placeholder="Add to tomorrow" aria-label="Add to tomorrow" required maxlength="120">
+            <button class="primary-button" type="submit">Add</button>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,1439 @@
+const storageKey = "taskLists.v2";
+const legacyStorageKey = "tasks.v1";
+const themeKey = "tasks.theme";
+const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
+const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
+const todayListId = "pinned-today";
+const todayListType = "today";
+const completedPreviewLimit = 2;
+
+const listForm = document.querySelector("#listForm");
+const listName = document.querySelector("#listName");
+const todayBoard = document.querySelector("#todayBoard");
+const listBoard = document.querySelector("#listBoard");
+const emptyState = document.querySelector("#emptyState");
+const themeToggle = document.querySelector("#themeToggle");
+const todayLabel = document.querySelector("#todayLabel");
+const filterMenuButton = document.querySelector("#filterMenuButton");
+const filterMenu = document.querySelector("#filterMenu");
+const filterMenuLabel = document.querySelector("#filterMenuLabel");
+const tomorrowSection = document.querySelector(".tomorrow-section");
+const tomorrowToggle = document.querySelector("#tomorrowToggle");
+const tomorrowBody = document.querySelector("#tomorrowBody");
+const tomorrowCount = document.querySelector("#tomorrowCount");
+const tomorrowList = document.querySelector("#tomorrowList");
+const tomorrowForm = document.querySelector("#tomorrowForm");
+const tomorrowInput = document.querySelector("#tomorrowInput");
+const taskBoards = [todayBoard, listBoard].filter(Boolean);
+const filterLabels = {
+  all: "All",
+  active: "Open",
+  completed: "Done"
+};
+
+let lists = loadLists();
+let tomorrowQueue = loadTomorrowQueue();
+let filter = "all";
+let dragState = null;
+let openMenu = null;
+let filterMenuOpen = false;
+let editingListId = null;
+let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
+let expandedCompletedLists = new Set();
+let activeTaskFormListId = null;
+const taskFormDrafts = new Map();
+let suppressHandleClick = false;
+let todayText = formatTodayDate();
+let rolloverTimer = null;
+
+todayLabel.textContent = todayText;
+rollTomorrowQueueIntoToday();
+scheduleNextRollover();
+
+const savedTheme = localStorage.getItem(themeKey);
+if (savedTheme) {
+  document.documentElement.dataset.theme = savedTheme;
+}
+
+if ("ResizeObserver" in window) {
+  new ResizeObserver(updateTomorrowFooterSpace).observe(tomorrowSection);
+}
+
+window.addEventListener("resize", updateTomorrowFooterSpace);
+
+listForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = listName.value.trim();
+
+  if (!name) return;
+
+  lists = ensureTodayList([createList(name), ...lists]);
+  listForm.reset();
+  listName.focus();
+  persistAndRender();
+});
+
+taskBoards.forEach((board) => {
+  board.addEventListener("submit", handleTaskBoardSubmit);
+  board.addEventListener("keydown", handleTaskBoardKeydown);
+  board.addEventListener("input", handleTaskBoardFormInput);
+  board.addEventListener("change", handleTaskBoardFormInput);
+  board.addEventListener("focusout", handleTaskBoardFocusout);
+  board.addEventListener("pointerdown", handleDragPointerDown);
+  board.addEventListener("click", handleTaskBoardClick);
+});
+
+function handleTaskBoardSubmit(event) {
+  const renameForm = event.target.closest("form[data-list-rename-form]");
+  if (renameForm) {
+    event.preventDefault();
+    finishListRename(renameForm);
+    return;
+  }
+
+  const form = event.target.closest("form[data-list-form]");
+  if (!form) return;
+
+  event.preventDefault();
+  const list = findList(form.dataset.listId);
+  const title = form.elements.title.value.trim();
+
+  if (!list || !title) return;
+
+  list.tasks.push(createTask(title, {
+    due: form.elements.due?.value || "",
+    priority: form.elements.priority?.value || "normal"
+  }));
+  list.collapsed = false;
+  clearTaskFormDraft(list.id);
+  activeTaskFormListId = list.id;
+  persistAndRender();
+  focusTaskInput(list.id);
+}
+
+function handleTaskBoardKeydown(event) {
+  const renameInput = event.target.closest("input[data-list-rename-input]");
+  if (renameInput && event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    finishListRename(renameInput.form);
+    return;
+  }
+
+  if (renameInput && event.key === "Escape") {
+    event.preventDefault();
+    editingListId = null;
+    render();
+    return;
+  }
+
+  if (event.key !== "Enter" || event.isComposing) return;
+
+  const input = event.target.closest("form[data-list-form] input[name='title']");
+  if (!input) return;
+
+  event.preventDefault();
+  input.form.requestSubmit();
+}
+
+function handleTaskBoardFocusout(event) {
+  const renameInput = event.target.closest("input[data-list-rename-input]");
+  if (renameInput) {
+    finishListRename(renameInput.form);
+    return;
+  }
+
+  const taskForm = event.target.closest("form[data-list-form]");
+  if (!taskForm) return;
+
+  rememberTaskFormDraft(taskForm);
+  if (event.relatedTarget && taskForm.contains(event.relatedTarget)) return;
+
+  const listId = taskForm.dataset.listId;
+  window.setTimeout(() => {
+    if (activeTaskFormListId !== listId) return;
+
+    const currentForm = findInTaskBoards(`form[data-list-form][data-list-id="${listId}"]`);
+    if (currentForm?.contains(document.activeElement)) return;
+
+    activeTaskFormListId = null;
+    render();
+  }, 0);
+}
+
+function handleTaskBoardFormInput(event) {
+  const taskForm = event.target.closest("form[data-list-form]");
+  if (!taskForm) return;
+
+  rememberTaskFormDraft(taskForm);
+}
+
+function handleTaskBoardClick(event) {
+  const handle = event.target.closest("[data-menu-type]");
+  if (handle && isInsideTaskBoard(handle)) {
+    if (suppressHandleClick) {
+      suppressHandleClick = false;
+      return;
+    }
+
+    toggleHandleMenu(handle);
+    return;
+  }
+
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+
+  const listElement = button.closest("[data-list-id]");
+  const list = findList(listElement?.dataset.listId);
+  if (!list) return;
+
+  if (button.dataset.action === "toggle-list") {
+    list.collapsed = !list.collapsed;
+    if (list.collapsed && activeTaskFormListId === list.id) {
+      activeTaskFormListId = null;
+    }
+    persistAndRender();
+    return;
+  }
+
+  if (button.dataset.action === "show-task-form") {
+    activeTaskFormListId = list.id;
+    list.collapsed = false;
+    render();
+    focusTaskInput(list.id);
+    return;
+  }
+
+  if (button.dataset.action === "toggle-fields") {
+    list.showDetails = !list.showDetails;
+    openMenu = null;
+    persistAndRender();
+    return;
+  }
+
+  if (button.dataset.action === "toggle-completed-list") {
+    if (expandedCompletedLists.has(list.id)) {
+      expandedCompletedLists.delete(list.id);
+    } else {
+      expandedCompletedLists.add(list.id);
+    }
+    render();
+    return;
+  }
+
+  if (button.dataset.action === "edit-list") {
+    if (isTodayList(list)) return;
+    editingListId = list.id;
+    openMenu = null;
+    render();
+    focusListRenameInput(list.id);
+    return;
+  }
+
+  if (button.dataset.action === "delete-list") {
+    if (isTodayList(list)) return;
+    const hasTasks = list.tasks.length > 0;
+    const shouldDelete = !hasTasks || askToConfirm(`Delete "${list.name}" and its tasks?`);
+    if (!shouldDelete) return;
+    lists = lists.filter((item) => item.id !== list.id);
+    expandedCompletedLists.delete(list.id);
+    clearTaskFormDraft(list.id);
+    if (activeTaskFormListId === list.id) {
+      activeTaskFormListId = null;
+    }
+    openMenu = null;
+    persistAndRender();
+    return;
+  }
+
+  const taskElement = button.closest("[data-task-id]");
+  const task = list.tasks.find((item) => item.id === taskElement?.dataset.taskId);
+  if (!task) return;
+
+  if (button.dataset.action === "toggle-task") {
+    const wasCompleted = task.completed;
+    task.completed = !task.completed;
+    task.completedAt = task.completed ? new Date().toISOString() : "";
+    if (wasCompleted && !task.completed) {
+      moveTaskToOpenBottom(list, task.id);
+    }
+  }
+
+  if (button.dataset.action === "edit-task") {
+    const nextTitle = askForText("Edit task", task.title);
+    if (nextTitle === null) return;
+    const trimmed = nextTitle.trim();
+    if (trimmed) task.title = trimmed;
+    openMenu = null;
+  }
+
+  if (button.dataset.action === "delete-task") {
+    list.tasks = list.tasks.filter((item) => item.id !== task.id);
+    openMenu = null;
+  }
+
+  persistAndRender();
+}
+
+document.addEventListener("click", (event) => {
+  const insideFilterMenu = event.target.closest(".filter-menu-shell");
+
+  if (filterMenuOpen && !insideFilterMenu) {
+    filterMenuOpen = false;
+    renderFilterMenu();
+  }
+
+  collapseActiveTaskFormFromOutsideClick(event);
+
+  if (!openMenu) return;
+  if (event.target.closest("[data-menu-type], .handle-menu")) return;
+
+  openMenu = null;
+  render();
+});
+
+filterMenuButton.addEventListener("click", () => {
+  filterMenuOpen = !filterMenuOpen;
+  if (openMenu) {
+    openMenu = null;
+    render();
+    return;
+  }
+
+  renderFilterMenu();
+});
+
+filterMenu.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-filter]");
+  if (!button) return;
+
+  filter = button.dataset.filter;
+  filterMenuOpen = false;
+  openMenu = null;
+  render();
+});
+
+tomorrowToggle.addEventListener("click", () => {
+  tomorrowCollapsed = !tomorrowCollapsed;
+  localStorage.setItem(tomorrowCollapsedKey, String(tomorrowCollapsed));
+  renderTomorrowQueue();
+});
+
+tomorrowForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const title = tomorrowInput.value.trim();
+  if (!title) return;
+
+  tomorrowQueue.push(createTomorrowQueueItem(title));
+  tomorrowForm.reset();
+  tomorrowInput.focus();
+  persistTomorrowQueue();
+  renderTomorrowQueue();
+});
+
+tomorrowForm.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || event.target !== tomorrowInput) return;
+
+  event.preventDefault();
+  tomorrowForm.requestSubmit();
+});
+
+tomorrowList.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-tomorrow-action]");
+  if (!button) return;
+
+  const item = button.closest("[data-tomorrow-id]");
+  if (!item) return;
+
+  if (button.dataset.tomorrowAction === "delete") {
+    tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== item.dataset.tomorrowId);
+    persistTomorrowQueue();
+    renderTomorrowQueue();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+
+  if (filterMenuOpen) {
+    filterMenuOpen = false;
+    renderFilterMenu();
+  }
+
+  if (openMenu) {
+    openMenu = null;
+    render();
+  }
+});
+
+themeToggle.addEventListener("click", () => {
+  const nextTheme = document.documentElement.dataset.theme === "dark" ? "" : "dark";
+  document.documentElement.dataset.theme = nextTheme;
+  if (nextTheme) {
+    localStorage.setItem(themeKey, nextTheme);
+  } else {
+    localStorage.removeItem(themeKey);
+  }
+});
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+    rollTomorrowQueueIntoToday({ renderAfter: true });
+  }
+});
+
+window.addEventListener("focus", () => {
+  rollTomorrowQueueIntoToday({ renderAfter: true });
+});
+
+if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("sw.js").catch(() => {});
+  });
+}
+
+render();
+
+function persistAndRender() {
+  persistLists();
+  render();
+}
+
+function persistLists() {
+  lists = ensureTodayList(lists);
+  localStorage.setItem(storageKey, JSON.stringify(lists));
+}
+
+function persistTomorrowQueue() {
+  localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+}
+
+function loadLists() {
+  try {
+    const savedLists = JSON.parse(localStorage.getItem(storageKey));
+    if (Array.isArray(savedLists)) {
+      return ensureTodayList(savedLists.map(normalizeList));
+    }
+
+    const legacyTasks = JSON.parse(localStorage.getItem(legacyStorageKey));
+    if (Array.isArray(legacyTasks) && legacyTasks.length > 0) {
+      return ensureTodayList([createList("Inbox", false, legacyTasks.map(normalizeTask))]);
+    }
+  } catch {
+    return ensureTodayList([createList("Personal")]);
+  }
+
+  return ensureTodayList([createList("Personal")]);
+}
+
+function loadTomorrowQueue() {
+  try {
+    const savedQueue = JSON.parse(localStorage.getItem(tomorrowQueueKey));
+    if (Array.isArray(savedQueue)) {
+      return savedQueue.map(normalizeTomorrowQueueItem).filter(Boolean);
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
+function render() {
+  refreshTodayText();
+  const todayList = lists.find(isTodayList);
+  const visibleLists = lists.filter((list) => !isTodayList(list) && shouldShowList(list));
+
+  renderFilterMenu();
+  renderTomorrowQueue();
+  emptyState.hidden = visibleLists.length > 0;
+
+  todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
+  listBoard.replaceChildren(...visibleLists.map(createListElement));
+}
+
+function renderFilterMenu() {
+  filterMenuLabel.textContent = filterLabels[filter] || filterLabels.all;
+  filterMenuButton.setAttribute("aria-expanded", String(filterMenuOpen));
+  filterMenu.hidden = !filterMenuOpen;
+
+  filterMenu.querySelectorAll("[data-filter]").forEach((button) => {
+    const isActive = button.dataset.filter === filter;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-checked", String(isActive));
+  });
+}
+
+function renderTomorrowQueue() {
+  tomorrowToggle.setAttribute("aria-expanded", String(!tomorrowCollapsed));
+  tomorrowBody.hidden = tomorrowCollapsed;
+  tomorrowCount.textContent = tomorrowQueue.length === 1 ? "1 queued" : `${tomorrowQueue.length} queued`;
+
+  if (tomorrowQueue.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "tomorrow-empty";
+    empty.textContent = "No tasks queued.";
+    tomorrowList.replaceChildren(empty);
+    updateTomorrowFooterSpace();
+    return;
+  }
+
+  tomorrowList.replaceChildren(...tomorrowQueue.map(createTomorrowQueueElement));
+  updateTomorrowFooterSpace();
+}
+
+function createTomorrowQueueElement(entry) {
+  const item = document.createElement("li");
+  item.className = "tomorrow-item";
+  item.dataset.tomorrowId = entry.id;
+
+  const title = document.createElement("p");
+  title.className = "tomorrow-title";
+  title.textContent = entry.title;
+
+  const button = document.createElement("button");
+  button.className = "tomorrow-remove";
+  button.type = "button";
+  button.dataset.tomorrowAction = "delete";
+  button.setAttribute("aria-label", `Remove ${entry.title}`);
+  button.textContent = "Remove";
+
+  item.append(title, button);
+  return item;
+}
+
+function shouldShowList(list) {
+  if (isTodayList(list)) return true;
+  if (filter === "all") return true;
+  const groups = getTaskGroups(list);
+  return groups.openTasks.length > 0 || groups.completedTasks.length > 0;
+}
+
+function getTaskGroups(list) {
+  const openTasks = list.tasks.filter((task) => !task.completed);
+  const completedTasks = list.tasks.filter((task) => task.completed).sort(compareCompletedTasks);
+
+  if (filter === "active") {
+    return {
+      openTasks,
+      completedTasks: [],
+      visibleCompletedTasks: [],
+      hiddenCompletedCount: 0,
+      isCompletedExpanded: false,
+      showCompletedToggle: false
+    };
+  }
+
+  const showAllCompleted = filter === "completed" || expandedCompletedLists.has(list.id);
+  const visibleCompletedTasks = showAllCompleted ? completedTasks : completedTasks.slice(0, completedPreviewLimit);
+
+  return {
+    openTasks: filter === "completed" ? [] : openTasks,
+    completedTasks,
+    visibleCompletedTasks,
+    hiddenCompletedCount: Math.max(0, completedTasks.length - visibleCompletedTasks.length),
+    isCompletedExpanded: showAllCompleted,
+    showCompletedToggle: filter === "all" && completedTasks.length > completedPreviewLimit
+  };
+}
+
+function compareCompletedTasks(first, second) {
+  return getCompletedTime(second) - getCompletedTime(first);
+}
+
+function getCompletedTime(task) {
+  return new Date(task.completedAt || task.createdAt || 0).getTime();
+}
+
+function createListElement(list) {
+  const item = document.createElement("li");
+  const taskGroups = getTaskGroups(list);
+  const openTasks = list.tasks.filter((task) => !task.completed).length;
+  const doneTasks = list.tasks.length - openTasks;
+  const bodyId = `list-body-${list.id}`;
+
+  item.className = `standing-list${list.collapsed ? " is-collapsed" : ""}`;
+  if (isTodayList(list)) {
+    item.classList.add("is-pinned");
+  }
+  if (openMenu?.listId === list.id) {
+    item.classList.add("has-open-menu");
+  }
+  item.dataset.listId = list.id;
+
+  const header = document.createElement("div");
+  header.className = "list-header";
+
+  const dragHandle = createDragHandle("list", isTodayList(list) ? "Today options" : `Drag ${list.name}`, {
+    draggable: !isTodayList(list),
+    fixed: isTodayList(list),
+    open: isMenuOpen("list", list.id)
+  });
+
+  const chevron = document.createElement("span");
+  chevron.className = "chevron";
+  chevron.setAttribute("aria-hidden", "true");
+  chevron.textContent = list.collapsed ? "+" : "-";
+
+  let titleControl;
+  if (editingListId === list.id && !isTodayList(list)) {
+    titleControl = createListRenameForm(list);
+  } else {
+    const toggle = document.createElement("button");
+    toggle.className = "list-toggle";
+    toggle.type = "button";
+    toggle.dataset.action = "toggle-list";
+    toggle.setAttribute("aria-expanded", String(!list.collapsed));
+    toggle.setAttribute("aria-controls", bodyId);
+
+    const title = document.createElement("span");
+    title.className = "list-title";
+
+    const name = document.createElement("span");
+    name.className = "list-name";
+    name.textContent = list.name;
+    title.append(name);
+
+    if (isTodayList(list)) {
+      const date = document.createElement("span");
+      date.className = "list-date";
+      date.textContent = todayText;
+      title.append(date);
+    }
+
+    toggle.append(chevron, title);
+    titleControl = toggle;
+  }
+
+  const progressText = document.createElement("span");
+  progressText.className = "list-progress-text";
+  progressText.textContent = formatProgressText(doneTasks, list.tasks.length);
+
+  header.append(dragHandle, titleControl, progressText);
+
+  const body = document.createElement("div");
+  body.className = "list-body";
+  body.id = bodyId;
+  body.hidden = list.collapsed;
+
+  const nestedTasks = document.createElement("ul");
+  nestedTasks.className = "nested-task-list open-task-list";
+  nestedTasks.replaceChildren(...taskGroups.openTasks.map((task) => createTaskElement(task, list)));
+
+  if (taskGroups.openTasks.length > 0) {
+    body.append(nestedTasks);
+  } else if (shouldShowInlineEmpty(list, taskGroups)) {
+    body.append(createInlineEmpty(getInlineEmptyText(list, taskGroups)));
+  }
+  body.append(createTaskForm(list));
+  if (taskGroups.visibleCompletedTasks.length > 0) {
+    body.append(createCompletedSection(list, taskGroups));
+  }
+
+  item.append(header);
+  if (isMenuOpen("list", list.id)) {
+    item.append(createListMenu(list));
+  }
+  item.append(body);
+  return item;
+}
+
+function createTaskForm(list) {
+  if (activeTaskFormListId !== list.id) {
+    return createTaskFormLauncher(list);
+  }
+
+  const form = document.createElement("form");
+  form.className = `inline-task-form${list.showDetails ? "" : " is-simple"}`;
+  form.setAttribute("data-list-form", "");
+  form.dataset.listId = list.id;
+  form.autocomplete = "off";
+  const draft = getTaskFormDraft(list.id);
+
+  const title = document.createElement("input");
+  title.name = "title";
+  title.type = "text";
+  title.placeholder = "Add a to-do";
+  title.required = true;
+  title.maxLength = 120;
+  title.value = draft.title;
+
+  const due = document.createElement("input");
+  due.name = "due";
+  due.type = "date";
+  due.value = draft.due;
+
+  const priority = document.createElement("select");
+  priority.name = "priority";
+  priority.append(createOption("normal", "Normal"), createOption("high", "High"), createOption("low", "Low"));
+  priority.value = draft.priority;
+
+  const button = document.createElement("button");
+  button.className = "primary-button";
+  button.type = "submit";
+  button.textContent = "Add";
+
+  const check = document.createElement("span");
+  check.className = "add-task-check";
+  check.setAttribute("aria-hidden", "true");
+
+  form.append(check, createField("Task", title));
+  if (list.showDetails) {
+    form.append(createField("Due", due), createField("Priority", priority));
+  }
+  form.append(button);
+  return form;
+}
+
+function createTaskFormLauncher(list) {
+  const button = document.createElement("button");
+  button.className = "inline-task-launcher";
+  button.type = "button";
+  button.dataset.action = "show-task-form";
+  button.textContent = "Add a to-do";
+  button.setAttribute("aria-label", `Add a to-do to ${list.name}`);
+  return button;
+}
+
+function createListRenameForm(list) {
+  const form = document.createElement("form");
+  form.className = "list-rename-form";
+  form.setAttribute("data-list-rename-form", "");
+  form.dataset.listId = list.id;
+  form.autocomplete = "off";
+
+  const input = document.createElement("input");
+  input.className = "list-rename-input";
+  input.name = "name";
+  input.type = "text";
+  input.value = list.name;
+  input.required = true;
+  input.maxLength = 80;
+  input.dataset.listRenameInput = "";
+  input.setAttribute("aria-label", `Rename ${list.name}`);
+
+  form.append(input);
+  return form;
+}
+
+function createTaskElement(task, list) {
+  const item = document.createElement("li");
+  item.className = `task-row${task.completed ? " is-complete" : ""}`;
+  if (isMenuOpen("task", list.id, task.id)) {
+    item.classList.add("has-open-menu");
+  }
+  item.dataset.taskId = task.id;
+
+  const dragHandle = createDragHandle("task", `Drag ${task.title}`, {
+    open: isMenuOpen("task", list.id, task.id)
+  });
+
+  const check = document.createElement("button");
+  check.className = "check";
+  check.type = "button";
+  check.dataset.action = "toggle-task";
+  check.setAttribute("aria-label", task.completed ? "Mark open" : "Mark done");
+  check.textContent = task.completed ? "✓" : "";
+
+  const body = document.createElement("div");
+  const title = document.createElement("p");
+  title.className = "task-title";
+  title.textContent = task.title;
+
+  const meta = document.createElement("div");
+  meta.className = "task-meta";
+  if (list.showDetails) {
+    meta.append(createPriorityPill(task.priority));
+
+    if (task.due) {
+      meta.append(createDuePill(task.due));
+    }
+  }
+
+  body.append(title);
+  if (meta.childElementCount > 0) {
+    body.append(meta);
+  }
+
+  item.append(dragHandle, check, body);
+  if (isMenuOpen("task", list.id, task.id)) {
+    item.append(createTaskMenu(task));
+  }
+  return item;
+}
+
+function createField(labelText, control) {
+  const label = document.createElement("label");
+  const text = document.createElement("span");
+
+  label.className = "field";
+  text.textContent = labelText;
+  label.append(text, control);
+  return label;
+}
+
+function createOption(value, label) {
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label;
+  return option;
+}
+
+function formatProgressText(doneTasks, totalTasks) {
+  return totalTasks > 0 ? `${doneTasks}/${totalTasks} completed` : "0 completed";
+}
+
+function createInlineEmpty(text) {
+  const empty = document.createElement("p");
+  empty.className = "inline-empty";
+  empty.textContent = text;
+  return empty;
+}
+
+function createCompletedSection(list, taskGroups) {
+  const section = document.createElement("div");
+  section.className = "completed-section";
+
+  const completedList = document.createElement("ul");
+  completedList.className = "nested-task-list completed-task-list";
+  completedList.replaceChildren(...taskGroups.visibleCompletedTasks.map((task) => createTaskElement(task, list)));
+  section.append(completedList);
+
+  if (taskGroups.showCompletedToggle) {
+    const button = document.createElement("button");
+    button.className = "completed-toggle";
+    button.type = "button";
+    button.dataset.action = "toggle-completed-list";
+    button.setAttribute("aria-expanded", String(taskGroups.isCompletedExpanded));
+    button.textContent = taskGroups.isCompletedExpanded
+      ? "Show fewer completed to-dos"
+      : `And ${taskGroups.hiddenCompletedCount} more completed to-dos...`;
+    section.append(button);
+  }
+
+  return section;
+}
+
+function shouldShowInlineEmpty(list, taskGroups) {
+  if (filter === "active") return list.tasks.length === 0 || list.tasks.some((task) => task.completed);
+  if (filter === "completed") return taskGroups.completedTasks.length === 0;
+  return list.tasks.length === 0;
+}
+
+function getInlineEmptyText(list, taskGroups) {
+  if (filter === "active" && list.tasks.length > 0 && taskGroups.openTasks.length === 0) return "No open tasks in this list.";
+  if (filter === "completed") return "No completed tasks in this list.";
+  return "No tasks in this list.";
+}
+
+function createDragHandle(type, label, options = {}) {
+  const button = document.createElement("button");
+  button.className = "drag-handle";
+  button.type = "button";
+  button.draggable = false;
+  button.dataset.menuType = type;
+  if (options.draggable !== false) {
+    button.dataset.dragType = type;
+  }
+  button.classList.toggle("is-open", Boolean(options.open));
+  button.classList.toggle("is-fixed", Boolean(options.fixed));
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-haspopup", "menu");
+  button.title = label;
+  button.setAttribute("aria-expanded", String(Boolean(options.open)));
+  button.innerHTML = '<span class="drag-lines" aria-hidden="true"></span>';
+  return button;
+}
+
+function createListMenu(list) {
+  const menu = document.createElement("div");
+  menu.className = "handle-menu list-handle-menu";
+  menu.setAttribute("role", "menu");
+
+  menu.append(createMenuButton("Details", "toggle-fields", list.showDetails ? `Hide details for ${list.name}` : `Show details for ${list.name}`, list.showDetails));
+  if (!isTodayList(list)) {
+    menu.append(
+      createMenuButton("Edit", "edit-list", `Edit ${list.name}`),
+      createMenuButton("Delete", "delete-list", `Delete ${list.name}`, false, true)
+    );
+  }
+
+  return menu;
+}
+
+function createTaskMenu(task) {
+  const menu = document.createElement("div");
+  menu.className = "handle-menu task-handle-menu";
+  menu.setAttribute("role", "menu");
+  menu.append(
+    createMenuButton("Edit", "edit-task", `Edit ${task.title}`),
+    createMenuButton("Delete", "delete-task", `Delete ${task.title}`, false, true)
+  );
+  return menu;
+}
+
+function createMenuButton(label, action, ariaLabel = label, active = false, danger = false) {
+  const button = createActionButton(label, action, ariaLabel);
+  button.className = "menu-link";
+  button.classList.toggle("is-active", active);
+  button.classList.toggle("is-danger", danger);
+  if (action === "toggle-fields") {
+    button.setAttribute("role", "menuitemcheckbox");
+    button.setAttribute("aria-checked", String(Boolean(active)));
+  } else {
+    button.setAttribute("role", "menuitem");
+  }
+  return button;
+}
+
+function createPriorityPill(priority) {
+  const pill = document.createElement("span");
+  pill.className = `pill ${priority}`;
+  pill.textContent = priority === "high" ? "High" : priority === "low" ? "Low" : "Normal";
+  return pill;
+}
+
+function createDuePill(due) {
+  const pill = document.createElement("span");
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const dueDate = new Date(`${due}T00:00:00`);
+
+  pill.className = `pill${dueDate < today ? " overdue" : ""}`;
+  pill.textContent = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric"
+  }).format(dueDate);
+  return pill;
+}
+
+function createActionButton(label, action, ariaLabel = label) {
+  const button = document.createElement("button");
+  button.className = `task-action ${action.includes("delete") ? "delete" : ""}`;
+  button.type = "button";
+  button.dataset.action = action;
+  button.setAttribute("aria-label", ariaLabel);
+  button.textContent = label;
+  return button;
+}
+
+function toggleHandleMenu(handle) {
+  const listElement = handle.closest("[data-list-id]");
+  const list = findList(listElement?.dataset.listId);
+  if (!list) return;
+
+  const type = handle.dataset.menuType;
+  const taskElement = handle.closest("[data-task-id]");
+  const taskId = type === "task" ? taskElement?.dataset.taskId : null;
+  const nextMenu = { type, listId: list.id, taskId };
+
+  openMenu = isMenuOpen(type, list.id, taskId) ? null : nextMenu;
+  render();
+}
+
+function isMenuOpen(type, listId, taskId = null) {
+  return openMenu?.type === type && openMenu?.listId === listId && (type !== "task" || openMenu?.taskId === taskId);
+}
+
+function finishListRename(form) {
+  const list = findList(form?.dataset.listId);
+  if (!list || isTodayList(list) || editingListId !== list.id) return;
+
+  const nextName = form.elements.name.value.trim();
+  if (nextName) {
+    list.name = nextName;
+  }
+
+  editingListId = null;
+  openMenu = null;
+  persistAndRender();
+}
+
+function askForText(message, currentValue) {
+  try {
+    return window.prompt(message, currentValue);
+  } catch {
+    return null;
+  }
+}
+
+function askToConfirm(message) {
+  try {
+    return window.confirm(message);
+  } catch {
+    return true;
+  }
+}
+
+function createTask(title, options = {}) {
+  const completed = Boolean(options.completed);
+  const createdAt = options.createdAt || new Date().toISOString();
+  const priorities = ["normal", "high", "low"];
+
+  return {
+    id: options.id || uid(),
+    title,
+    due: options.due || "",
+    priority: priorities.includes(options.priority) ? options.priority : "normal",
+    completed,
+    completedAt: options.completedAt || (completed ? createdAt : ""),
+    createdAt
+  };
+}
+
+function createList(name, collapsed = false, tasks = [], options = {}) {
+  return {
+    id: options.id || uid(),
+    name,
+    collapsed,
+    tasks,
+    createdAt: options.createdAt || new Date().toISOString(),
+    type: options.type || "standard",
+    showDetails: Boolean(options.showDetails)
+  };
+}
+
+function normalizeList(list) {
+  return {
+    id: list.id || uid(),
+    name: list.name || "Untitled",
+    collapsed: Boolean(list.collapsed),
+    tasks: Array.isArray(list.tasks) ? list.tasks.map(normalizeTask) : [],
+    createdAt: list.createdAt || new Date().toISOString(),
+    type: list.type || "standard",
+    showDetails: Boolean(list.showDetails)
+  };
+}
+
+function normalizeTask(task) {
+  return createTask(task.title || "Untitled task", task);
+}
+
+function createTomorrowQueueItem(title, options = {}) {
+  return {
+    id: options.id || uid(),
+    title,
+    targetDate: options.targetDate || getTomorrowDateKey(),
+    createdAt: options.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizeTomorrowQueueItem(item) {
+  if (typeof item === "string") {
+    const title = item.trim();
+    return title ? createTomorrowQueueItem(title) : null;
+  }
+
+  const title = item?.title?.trim();
+  if (!title) return null;
+
+  return createTomorrowQueueItem(title, {
+    id: item.id,
+    targetDate: item.targetDate || getTomorrowDateKey(new Date(item.createdAt || Date.now())),
+    createdAt: item.createdAt
+  });
+}
+
+function findList(id) {
+  return lists.find((list) => list.id === id);
+}
+
+function getTaskFormDraft(listId) {
+  return taskFormDrafts.get(listId) || {
+    title: "",
+    due: "",
+    priority: "normal"
+  };
+}
+
+function rememberTaskFormDraft(form) {
+  const title = form.elements.title?.value || "";
+  const due = form.elements.due?.value || "";
+  const priority = form.elements.priority?.value || "normal";
+  const hasDraft = title.trim() || due || priority !== "normal";
+
+  if (!hasDraft) {
+    clearTaskFormDraft(form.dataset.listId);
+    return;
+  }
+
+  taskFormDrafts.set(form.dataset.listId, {
+    title,
+    due,
+    priority
+  });
+}
+
+function clearTaskFormDraft(listId) {
+  taskFormDrafts.delete(listId);
+}
+
+function collapseActiveTaskFormFromOutsideClick(event) {
+  if (!activeTaskFormListId) return;
+  if (event.target.closest("form[data-list-form], .inline-task-launcher")) return;
+
+  const form = findInTaskBoards(`form[data-list-form][data-list-id="${activeTaskFormListId}"]`);
+  if (form) {
+    rememberTaskFormDraft(form);
+  }
+
+  activeTaskFormListId = null;
+  render();
+}
+
+function focusTaskInput(listId) {
+  const forms = taskBoards.flatMap((board) => Array.from(board.querySelectorAll("form[data-list-form]")));
+  const form = forms.find((item) => item.dataset.listId === listId);
+  const input = form?.elements.title;
+
+  if (!input) return;
+  input.focus();
+  input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function focusListRenameInput(listId) {
+  const input = findInTaskBoards(`[data-list-id="${listId}"] input[data-list-rename-input]`);
+  if (!input) return;
+
+  input.focus();
+  input.select();
+}
+
+function handleDragPointerDown(event) {
+  const handle = event.target.closest("[data-drag-type]");
+  if (!handle || !isInsideTaskBoard(handle) || event.button > 0) return;
+
+  const listElement = handle.closest("[data-list-id]");
+  const list = findList(listElement?.dataset.listId);
+  if (!list) return;
+
+  const type = handle.dataset.dragType;
+  if (type === "list" && isTodayList(list)) return;
+
+  const taskElement = handle.closest("[data-task-id]");
+  if (type === "task" && !taskElement) return;
+
+  dragState = {
+    active: false,
+    handle,
+    listId: list.id,
+    pointerId: event.pointerId,
+    position: "after",
+    startX: event.clientX,
+    startY: event.clientY,
+    targetListId: null,
+    targetTaskId: null,
+    taskId: taskElement?.dataset.taskId || null,
+    type
+  };
+
+  handle.setPointerCapture?.(event.pointerId);
+  document.addEventListener("pointermove", handleDragPointerMove);
+  document.addEventListener("pointerup", handleDragPointerUp, { once: true });
+  document.addEventListener("pointercancel", handleDragPointerCancel, { once: true });
+}
+
+function handleDragPointerMove(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+
+  const movement = Math.hypot(event.clientX - dragState.startX, event.clientY - dragState.startY);
+  if (!dragState.active && movement < 6) return;
+
+  if (!dragState.active) {
+    dragState.active = true;
+    openMenu = null;
+    document.body.classList.add("is-reordering");
+    getDragSourceElement()?.classList.add("is-dragging");
+  }
+
+  event.preventDefault();
+  updateDragTarget(event.clientX, event.clientY);
+}
+
+function handleDragPointerUp(event) {
+  if (!dragState || event.pointerId !== dragState.pointerId) return;
+
+  suppressHandleClick = dragState.active;
+
+  if (dragState.active && dragState.targetListId) {
+    if (dragState.type === "list") {
+      moveList(dragState.listId, dragState.targetListId, dragState.position);
+    } else {
+      moveTask(dragState.listId, dragState.taskId, dragState.targetListId, dragState.targetTaskId, dragState.position);
+    }
+  }
+
+  cleanupDragState();
+}
+
+function handleDragPointerCancel() {
+  cleanupDragState();
+}
+
+function updateDragTarget(x, y) {
+  clearDragIndicators();
+  if (!dragState) return;
+
+  const element = document.elementFromPoint(x, y);
+  if (!element) return;
+
+  if (dragState.type === "list") {
+    updateListDragTarget(element, y);
+    return;
+  }
+
+  updateTaskDragTarget(element, y);
+}
+
+function updateListDragTarget(element, y) {
+  const targetElement = element.closest(".standing-list[data-list-id]");
+  const targetList = findList(targetElement?.dataset.listId);
+  if (!targetElement || !targetList || targetList.id === dragState.listId) return;
+
+  const box = targetElement.getBoundingClientRect();
+  let position = y > box.top + box.height / 2 ? "after" : "before";
+  if (isTodayList(targetList)) {
+    position = "after";
+  }
+
+  targetElement.classList.add(position === "before" ? "is-drag-over-before" : "is-drag-over-after");
+  dragState.targetListId = targetList.id;
+  dragState.position = position;
+}
+
+function updateTaskDragTarget(element, y) {
+  const targetListElement = element.closest(".standing-list[data-list-id]");
+  const targetList = findList(targetListElement?.dataset.listId);
+  if (!targetListElement || !targetList) return;
+
+  const targetTaskElement = element.closest(".task-row[data-task-id]");
+  if (targetTaskElement && targetListElement.contains(targetTaskElement)) {
+    const targetTaskId = targetTaskElement.dataset.taskId;
+    if (targetList.id === dragState.listId && targetTaskId === dragState.taskId) return;
+
+    const box = targetTaskElement.getBoundingClientRect();
+    const position = y > box.top + box.height / 2 ? "after" : "before";
+    targetTaskElement.classList.add(position === "before" ? "is-drag-over-before" : "is-drag-over-after");
+    dragState.targetListId = targetList.id;
+    dragState.targetTaskId = targetTaskId;
+    dragState.position = position;
+    return;
+  }
+
+  targetListElement.classList.add("is-task-drop-target");
+  dragState.targetListId = targetList.id;
+  dragState.targetTaskId = null;
+  dragState.position = "after";
+}
+
+function moveList(sourceListId, targetListId, position) {
+  if (sourceListId === targetListId) return;
+
+  const sourceIndex = lists.findIndex((list) => list.id === sourceListId);
+  if (sourceIndex < 0 || isTodayList(lists[sourceIndex])) return;
+
+  const [list] = lists.splice(sourceIndex, 1);
+  const targetIndex = lists.findIndex((item) => item.id === targetListId);
+  if (targetIndex < 0) {
+    lists.push(list);
+    persistAndRender();
+    return;
+  }
+
+  let insertIndex = targetIndex + (position === "after" ? 1 : 0);
+  if (targetIndex === 0 && isTodayList(lists[targetIndex])) {
+    insertIndex = 1;
+  }
+  insertIndex = Math.max(1, insertIndex);
+  lists.splice(insertIndex, 0, list);
+  persistAndRender();
+}
+
+function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
+  const sourceList = findList(sourceListId);
+  const targetList = findList(targetListId);
+  if (!sourceList || !targetList || !taskId) return;
+  if (sourceListId === targetListId && taskId === targetTaskId) return;
+
+  const sourceIndex = sourceList.tasks.findIndex((task) => task.id === taskId);
+  if (sourceIndex < 0) return;
+
+  const [task] = sourceList.tasks.splice(sourceIndex, 1);
+  let insertIndex = targetList.tasks.length;
+
+  if (targetTaskId) {
+    const targetIndex = targetList.tasks.findIndex((item) => item.id === targetTaskId);
+    if (targetIndex >= 0) {
+      insertIndex = targetIndex + (position === "after" ? 1 : 0);
+    }
+  }
+
+  targetList.tasks.splice(insertIndex, 0, task);
+  targetList.collapsed = false;
+  persistAndRender();
+}
+
+function moveTaskToOpenBottom(list, taskId) {
+  const sourceIndex = list.tasks.findIndex((task) => task.id === taskId);
+  if (sourceIndex < 0) return;
+
+  const [task] = list.tasks.splice(sourceIndex, 1);
+  list.tasks.push(task);
+}
+
+function getDragSourceElement() {
+  if (!dragState) return null;
+
+  if (dragState.type === "list") {
+    return findInTaskBoards(`[data-list-id="${dragState.listId}"]`);
+  }
+
+  return findInTaskBoards(`[data-task-id="${dragState.taskId}"]`);
+}
+
+function clearDragIndicators() {
+  taskBoards.forEach((board) => {
+    board.querySelectorAll(".is-drag-over-before, .is-drag-over-after, .is-task-drop-target").forEach((element) => {
+      element.classList.remove("is-drag-over-before", "is-drag-over-after", "is-task-drop-target");
+    });
+  });
+}
+
+function findInTaskBoards(selector) {
+  for (const board of taskBoards) {
+    const match = board.querySelector(selector);
+    if (match) return match;
+  }
+
+  return null;
+}
+
+function isInsideTaskBoard(element) {
+  return taskBoards.some((board) => board.contains(element));
+}
+
+function cleanupDragState() {
+  document.removeEventListener("pointermove", handleDragPointerMove);
+  document.removeEventListener("pointerup", handleDragPointerUp);
+  document.removeEventListener("pointercancel", handleDragPointerCancel);
+  clearDragIndicators();
+  getDragSourceElement()?.classList.remove("is-dragging");
+  document.body.classList.remove("is-reordering");
+  dragState = null;
+}
+
+function rollTomorrowQueueIntoToday(options = {}) {
+  const dateChanged = refreshTodayText();
+
+  const todayKey = getDateKey();
+  const dueItems = tomorrowQueue.filter((item) => item.targetDate <= todayKey);
+  if (dueItems.length === 0) {
+    if (options.renderAfter && dateChanged) render();
+    return;
+  }
+
+  lists = ensureTodayList(lists);
+  const todayList = lists.find(isTodayList);
+  if (!todayList) return;
+
+  dueItems.forEach((item) => {
+    todayList.tasks.push(createTask(item.title));
+  });
+  todayList.collapsed = false;
+  tomorrowQueue = tomorrowQueue.filter((item) => item.targetDate > todayKey);
+  persistLists();
+  persistTomorrowQueue();
+
+  if (options.renderAfter) {
+    render();
+  }
+}
+
+function scheduleNextRollover() {
+  if (rolloverTimer) {
+    window.clearTimeout(rolloverTimer);
+  }
+
+  const now = new Date();
+  const nextMidnight = new Date(now);
+  nextMidnight.setHours(24, 0, 1, 0);
+  rolloverTimer = window.setTimeout(() => {
+    rollTomorrowQueueIntoToday({ renderAfter: true });
+    scheduleNextRollover();
+  }, Math.max(1000, nextMidnight.getTime() - now.getTime()));
+}
+
+function ensureTodayList(rawLists) {
+  const todayList = createList("Today", false, [], {
+    id: todayListId,
+    type: todayListType
+  });
+  const regularLists = [];
+
+  rawLists.forEach((list) => {
+    if (isTodayListCandidate(list)) {
+      todayList.collapsed = Boolean(list.collapsed);
+      todayList.createdAt = list.createdAt || todayList.createdAt;
+      todayList.showDetails = Boolean(list.showDetails);
+      todayList.tasks.push(...list.tasks);
+      return;
+    }
+
+    regularLists.push({
+      ...list,
+      type: list.type === todayListType ? "standard" : list.type
+    });
+  });
+
+  return [todayList, ...regularLists];
+}
+
+function isTodayList(list) {
+  return list?.id === todayListId || list?.type === todayListType;
+}
+
+function isTodayListCandidate(list) {
+  return isTodayList(list) || list?.name?.trim().toLowerCase() === "today";
+}
+
+function refreshTodayText() {
+  const nextTodayText = formatTodayDate();
+  const changed = nextTodayText !== todayText;
+  todayText = nextTodayText;
+  todayLabel.textContent = todayText;
+  return changed;
+}
+
+function updateTomorrowFooterSpace() {
+  window.requestAnimationFrame(() => {
+    const footerHeight = tomorrowSection?.getBoundingClientRect().height || 0;
+    document.documentElement.style.setProperty("--tomorrow-footer-space", `${footerHeight + 18}px`);
+  });
+}
+
+function formatTodayDate() {
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric"
+  }).format(new Date());
+}
+
+function getDateKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getTomorrowDateKey(date = new Date()) {
+  const tomorrow = new Date(date);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  return getDateKey(tomorrow);
+}
+
+function uid() {
+  if (window.crypto && window.crypto.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
