@@ -283,6 +283,15 @@ function handleTaskBoardClick(event) {
     openMenu = null;
   }
 
+  if (button.dataset.action === "move-task-tomorrow") {
+    tomorrowQueue.push(createTomorrowQueueItem(task.title));
+    list.tasks = list.tasks.filter((item) => item.id !== task.id);
+    openMenu = null;
+    persistTomorrowQueue();
+    persistAndRender();
+    return;
+  }
+
   persistAndRender();
 }
 
@@ -1006,7 +1015,7 @@ function createTaskElement(task, list) {
 
   item.append(dragHandle, check, body);
   if (isMenuOpen("task", list.id, task.id)) {
-    item.append(createTaskMenu(task));
+    item.append(createTaskMenu(task, list));
   }
   return item;
 }
@@ -1110,7 +1119,7 @@ function createListMenu(list) {
   return menu;
 }
 
-function createTaskMenu(task) {
+function createTaskMenu(task, list) {
   const menu = document.createElement("div");
   menu.className = "handle-menu task-handle-menu";
   menu.setAttribute("role", "menu");
@@ -1118,6 +1127,9 @@ function createTaskMenu(task) {
     createMenuButton("Edit", "edit-task", `Edit ${task.title}`),
     createMenuButton("Delete", "delete-task", `Delete ${task.title}`, false, true)
   );
+  if (isTodayList(list)) {
+    menu.append(createMenuButton("Bump to Tomorrow", "move-task-tomorrow", `Bump ${task.title} to Tomorrow`));
+  }
   return menu;
 }
 
