@@ -9,6 +9,8 @@ const todayListType = "today";
 const completedPreviewLimit = 2;
 const syncDebounceMs = 700;
 const syncRefreshDebounceMs = 500;
+const syncDialogPauseMs = 5000;
+const syncLocalWritePauseMs = 3500;
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -58,6 +60,7 @@ let syncRefreshTimer = null;
 let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
 let syncSkipRemoteRefreshUntil = 0;
+let syncDialogOpen = false;
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
@@ -506,12 +509,12 @@ async function handleAuthSession(session) {
 
 async function handleSyncButtonClick() {
   if (!isSupabaseConfigured()) {
-    alert("Add your Supabase URL and anon key to sync-config.js, then run supabase-schema.sql in Supabase.");
+    notifyUser("Add your Supabase URL and anon key to sync-config.js, then run supabase-schema.sql in Supabase.");
     return;
   }
 
   if (!syncClient) {
-    alert("Supabase is configured, but the sync library did not load. Check your internet connection and refresh.");
+    notifyUser("Supabase is configured, but the sync library did not load. Check your internet connection and refresh.");
     return;
   }
 
@@ -537,12 +540,12 @@ async function handleSyncButtonClick() {
 
   if (error) {
     updateSyncUi("Sign-in error");
-    alert(error.message || "Could not send the Supabase sign-in link.");
+    notifyUser(error.message || "Could not send the Supabase sign-in link.");
     return;
   }
 
   updateSyncUi("Check email");
-  alert("Check your email for the Supabase sign-in link. Use the same email on each device.");
+  notifyUser("Check your email for the Supabase sign-in link. Use the same email on each device.");
 }
 
 async function loadRemoteState() {
@@ -553,14 +556,14 @@ async function loadRemoteState() {
   const privateResult = await fetchPrivateDocument();
   if (privateResult.error) {
     updateSyncUi("Setup needed");
-    alert(`Supabase sync could not load. ${privateResult.error.message}`);
+    notifyUser(`Supabase sync could not load. ${privateResult.error.message}`);
     return;
   }
 
   let sharedResult = await fetchSharedLists();
   if (sharedResult.error) {
     updateSyncUi("Setup needed");
-    alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+    notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
     return;
   }
 
@@ -585,7 +588,7 @@ async function loadRemoteState() {
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
       updateSyncUi("Setup needed");
-      alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+      notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
       return;
     }
   } else if (!privateDocument) {
@@ -599,7 +602,7 @@ async function loadRemoteState() {
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
       updateSyncUi("Setup needed");
-      alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+      notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
       return;
     }
   }
@@ -614,7 +617,7 @@ async function loadRemoteState() {
 
 async function refreshRemoteState() {
   if (!syncClient || !syncUser || document.hidden) return;
-  if (Date.now() < syncSkipRemoteRefreshUntil) return;
+  if (shouldSkipRemoteRefresh()) return;
   await loadRemoteState();
 }
 
@@ -622,6 +625,7 @@ function queueRemoteSync() {
   if (syncApplyingRemoteState || !syncClient || !syncUser) return;
 
   window.clearTimeout(syncPushTimer);
+  pauseRemoteRefresh(syncDebounceMs + syncLocalWritePauseMs);
   updateSyncUi("Saving...");
   syncPushTimer = window.setTimeout(() => {
     pushRemoteState();
@@ -820,7 +824,7 @@ async function deleteRemoteList(listId) {
 
   if (error) {
     updateSyncUi("Sync error");
-    alert(`Could not delete the shared list remotely. ${error.message}`);
+    notifyUser(`Could not delete the shared list remotely. ${error.message}`);
     return;
   }
 
@@ -829,20 +833,20 @@ async function deleteRemoteList(listId) {
 
 async function shareListByEmail(list) {
   if (!syncClient || !syncUser) {
-    alert("Sign in before sharing a list.");
+    notifyUser("Sign in before sharing a list.");
     return;
   }
 
   if (!canManageList(list)) {
-    alert("Only the list owner can share this list.");
+    notifyUser("Only the list owner can share this list.");
     return;
   }
 
-  const email = normalizeEmail(askForTextWithoutRemoteRefresh(`Share "${list.name}" with email`, ""));
+  const email = normalizeEmail(askForText(`Share "${list.name}" with email`, ""));
   if (!email) return;
 
   if (!isValidEmail(email)) {
-    alert("Enter a valid email address.");
+    notifyUser("Enter a valid email address.");
     return;
   }
 
@@ -850,7 +854,7 @@ async function shareListByEmail(list) {
   const listError = await pushSharedLists(getStandingLists(lists));
   if (listError) {
     updateSyncUi("Share error");
-    alert(`Could not prepare this list for sharing. ${listError.message}`);
+    notifyUser(`Could not prepare this list for sharing. ${listError.message}`);
     return;
   }
 
@@ -868,19 +872,12 @@ async function shareListByEmail(list) {
 
   if (error) {
     updateSyncUi("Share error");
-    alert(`Could not share this list. ${error.message}`);
+    notifyUser(`Could not share this list. ${error.message}`);
     return;
   }
 
   updateSyncUi("Synced");
-  alert(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
-}
-
-function askForTextWithoutRemoteRefresh(message, currentValue) {
-  syncSkipRemoteRefreshUntil = Date.now() + 3000;
-  const value = askForText(message, currentValue);
-  syncSkipRemoteRefreshUntil = Date.now() + 3000;
-  return value;
+  notifyUser(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
 }
 
 async function syncUserProfile() {
@@ -898,7 +895,7 @@ async function syncUserProfile() {
 
   if (error) {
     updateSyncUi("Setup needed");
-    alert(`Supabase profile setup could not load. ${error.message}`);
+    notifyUser(`Supabase profile setup could not load. ${error.message}`);
   }
 }
 
@@ -937,6 +934,7 @@ async function claimPendingListInvites() {
 
 function scheduleRemoteRefresh(payload) {
   const source = payload.new || payload.old || {};
+  if (shouldSkipRemoteRefresh()) return;
   if (syncApplyingRemoteState || source.device_id === syncDeviceId) return;
 
   window.clearTimeout(syncRefreshTimer);
@@ -1513,19 +1511,52 @@ function finishListRename(form) {
 }
 
 function askForText(message, currentValue) {
-  try {
-    return window.prompt(message, currentValue);
-  } catch {
-    return null;
-  }
+  return runWithRemoteRefreshPaused(() => {
+    try {
+      return window.prompt(message, currentValue);
+    } catch {
+      return null;
+    }
+  }, null);
 }
 
 function askToConfirm(message) {
+  return runWithRemoteRefreshPaused(() => {
+    try {
+      return window.confirm(message);
+    } catch {
+      return true;
+    }
+  }, true);
+}
+
+function notifyUser(message) {
+  runWithRemoteRefreshPaused(() => {
+    window.alert(message);
+  });
+}
+
+function runWithRemoteRefreshPaused(callback, fallbackValue = undefined) {
+  syncDialogOpen = true;
+  pauseRemoteRefresh(syncDialogPauseMs);
   try {
-    return window.confirm(message);
+    return callback();
   } catch {
-    return true;
+    return fallbackValue;
+  } finally {
+    pauseRemoteRefresh(syncDialogPauseMs);
+    window.setTimeout(() => {
+      syncDialogOpen = false;
+    }, 0);
   }
+}
+
+function pauseRemoteRefresh(durationMs = syncDialogPauseMs) {
+  syncSkipRemoteRefreshUntil = Math.max(syncSkipRemoteRefreshUntil, Date.now() + durationMs);
+}
+
+function shouldSkipRemoteRefresh() {
+  return syncDialogOpen || Date.now() < syncSkipRemoteRefreshUntil;
 }
 
 function createTask(title, options = {}) {
