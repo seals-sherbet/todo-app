@@ -79,50 +79,44 @@ returns boolean
 language sql
 security definer
 set search_path = public
-as $$
-  select exists (
-    select 1
-    from public.task_lists
-    where id = target_list_id
-      and owner_id = auth.uid()
-  );
-$$;
+return exists (
+  select 1
+  from public.task_lists
+  where id = target_list_id
+    and owner_id = auth.uid()
+);
 
 create or replace function public.can_access_task_list(target_list_id text)
 returns boolean
 language sql
 security definer
 set search_path = public
-as $$
-  select exists (
-    select 1
-    from public.task_lists
-    where id = target_list_id
-      and owner_id = auth.uid()
-  )
-  or exists (
-    select 1
-    from public.list_members
-    where list_id = target_list_id
-      and user_id = auth.uid()
-  );
-$$;
+return exists (
+  select 1
+  from public.task_lists
+  where id = target_list_id
+    and owner_id = auth.uid()
+)
+or exists (
+  select 1
+  from public.list_members
+  where list_id = target_list_id
+    and user_id = auth.uid()
+);
 
 create or replace function public.can_edit_task_list(target_list_id text)
 returns boolean
 language sql
 security definer
 set search_path = public
-as $$
-  select public.is_task_list_owner(target_list_id)
-  or exists (
-    select 1
-    from public.list_members
-    where list_id = target_list_id
-      and user_id = auth.uid()
-      and role in ('editor', 'admin')
-  );
-$$;
+return public.is_task_list_owner(target_list_id)
+or exists (
+  select 1
+  from public.list_members
+  where list_id = target_list_id
+    and user_id = auth.uid()
+    and role in ('editor', 'admin')
+);
 
 drop policy if exists "Task documents are readable by owner" on public.task_documents;
 drop policy if exists "Task documents are insertable by owner" on public.task_documents;
@@ -289,40 +283,5 @@ create policy "List invites are deletable by owner"
 on public.list_invites
 for delete
 using (public.is_task_list_owner(list_id));
-
-do $$
-begin
-  alter publication supabase_realtime add table public.task_documents;
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
-  alter publication supabase_realtime add table public.task_lists;
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
-  alter publication supabase_realtime add table public.tasks;
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
-  alter publication supabase_realtime add table public.list_members;
-exception
-  when duplicate_object then null;
-end $$;
-
-do $$
-begin
-  alter publication supabase_realtime add table public.list_invites;
-exception
-  when duplicate_object then null;
-end $$;
 
 notify pgrst, 'reload schema';
