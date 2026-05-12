@@ -118,6 +118,18 @@ or exists (
     and role in ('editor', 'admin')
 );
 
+drop function if exists public.upsert_task_list(
+  text,
+  text,
+  boolean,
+  text,
+  boolean,
+  timestamptz,
+  integer,
+  timestamptz,
+  text
+);
+
 create or replace function public.upsert_task_list(
   target_id text,
   target_name text,
@@ -129,7 +141,7 @@ create or replace function public.upsert_task_list(
   target_updated_at timestamptz,
   target_device_id text
 )
-returns table(id text, owner_id uuid)
+returns table(list_id text, list_owner_id uuid)
 language plpgsql
 security definer
 set search_path = public
@@ -164,7 +176,7 @@ begin
     target_updated_at,
     target_device_id
   )
-  on conflict (id) do update
+  on conflict on constraint task_lists_pkey do update
   set
     name = excluded.name,
     collapsed = excluded.collapsed,

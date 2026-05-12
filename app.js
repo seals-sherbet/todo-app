@@ -1053,7 +1053,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
     if (listResult.error) return listResult.error;
 
     const list = uniqueStandingLists.find((item) => item.id === row.id);
-    const ownerId = listResult.data?.[0]?.owner_id;
+    const ownerId = listResult.data?.[0]?.list_owner_id || listResult.data?.[0]?.owner_id;
     if (list && ownerId) {
       list.ownerId = ownerId;
     }
