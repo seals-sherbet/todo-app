@@ -21,6 +21,7 @@ const emptyState = document.querySelector("#emptyState");
 const themeToggle = document.querySelector("#themeToggle");
 const syncButton = document.querySelector("#syncButton");
 const syncStatus = document.querySelector("#syncStatus");
+const syncErrorButton = document.querySelector("#syncErrorButton");
 const syncAuthDialog = document.querySelector("#syncAuthDialog");
 const syncAuthClose = document.querySelector("#syncAuthClose");
 const syncAuthTitle = document.querySelector("#syncAuthTitle");
@@ -76,6 +77,7 @@ let syncSkipRemoteRefreshUntil = 0;
 let syncDialogOpen = false;
 let syncPendingAllShared = false;
 let syncPendingSharedListIds = new Set();
+let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
@@ -487,6 +489,7 @@ themeToggle.addEventListener("click", () => {
 });
 
 syncButton.addEventListener("click", handleSyncButtonClick);
+syncErrorButton.addEventListener("click", handleSyncErrorButtonClick);
 syncEmailForm.addEventListener("submit", handleSyncEmailSubmit);
 syncCodeForm.addEventListener("submit", handleSyncCodeSubmit);
 syncAuthClose.addEventListener("click", closeSyncAuthDialog);
@@ -1240,6 +1243,9 @@ function updateSyncUi(message = "") {
   const configured = isSupabaseConfigured();
   const defaultMessage = configured ? (syncUser ? "Synced" : "Signed out") : "Local";
 
+  if (message !== "Sync error") {
+    clearSyncErrorDetails();
+  }
   syncStatus.textContent = message || defaultMessage;
   syncButton.textContent = configured ? (syncUser ? "Account" : "Sign in") : "Local";
   syncButton.classList.toggle("is-active", configured && Boolean(syncUser));
@@ -1249,10 +1255,49 @@ function updateSyncUi(message = "") {
 }
 
 function reportSyncError(context, error) {
-  const message = error?.message || "Unknown sync error";
-  console.error(`${context}: ${message}`, error);
+  const message = formatSyncError(context, error);
+  console.error(message, error);
   updateSyncUi("Sync error");
-  syncButton.title = `${context}: ${message}`;
+  showSyncErrorDetails(message);
+}
+
+function formatSyncError(context, error) {
+  const details = [
+    `${context}: ${error?.message || "Unknown sync error"}`,
+    error?.code ? `code: ${error.code}` : "",
+    error?.details ? `details: ${error.details}` : "",
+    error?.hint ? `hint: ${error.hint}` : ""
+  ].filter(Boolean);
+  return details.join("\n");
+}
+
+function showSyncErrorDetails(message) {
+  syncLastErrorDetails = message;
+  syncErrorButton.hidden = false;
+  syncErrorButton.title = message;
+  syncButton.title = message;
+  syncStatus.title = message;
+}
+
+function clearSyncErrorDetails() {
+  syncLastErrorDetails = "";
+  syncErrorButton.hidden = true;
+  syncErrorButton.title = "";
+  syncStatus.title = "";
+}
+
+async function handleSyncErrorButtonClick() {
+  if (!syncLastErrorDetails) return;
+
+  let copied = false;
+  try {
+    await navigator.clipboard?.writeText(syncLastErrorDetails);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+
+  notifyUser(`${copied ? "Copied sync error details:\n\n" : "Sync error details:\n\n"}${syncLastErrorDetails}`);
 }
 
 function isSupabaseConfigured() {
