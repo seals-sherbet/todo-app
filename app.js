@@ -828,13 +828,13 @@ async function pushRemoteState() {
 
   const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, updatedAt);
   if (privateError) {
-    updateSyncUi("Sync error");
+    reportSyncError("Private sync", privateError);
     return;
   }
 
   const sharedError = await pushSharedLists(getStandingLists(lists), updatedAt);
   if (sharedError) {
-    updateSyncUi("Sync error");
+    reportSyncError("Shared list sync", sharedError);
     return;
   }
 
@@ -926,6 +926,7 @@ async function fetchSharedLists() {
   const listRows = listResult.data || [];
   const listIds = listRows.map((list) => list.id);
   let taskRows = [];
+  let memberRows = [];
 
   if (listIds.length > 0) {
     const taskResult = await syncClient
@@ -940,6 +941,18 @@ async function fetchSharedLists() {
     }
 
     taskRows = taskResult.data || [];
+
+    const memberResult = await syncClient
+      .from("list_members")
+      .select("list_id,role")
+      .in("list_id", listIds)
+      .eq("user_id", syncUser.id);
+
+    if (memberResult.error) {
+      return { lists: [], error: memberResult.error };
+    }
+
+    memberRows = memberResult.data || [];
   }
 
   const tasksByList = taskRows.reduce((groups, row) => {
@@ -947,9 +960,13 @@ async function fetchSharedLists() {
     groups[row.list_id].push(rowToTask(row));
     return groups;
   }, {});
+  const roleByList = memberRows.reduce((roles, row) => {
+    roles[row.list_id] = row.role || "";
+    return roles;
+  }, {});
 
   return {
-    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [])),
+    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [], roleByList[row.id] || "")),
     error: null
   };
 }
@@ -989,7 +1006,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   for (const [index, list] of standingLists.entries()) {
-    if (canManageList(list)) continue;
+    if (canManageList(list) || !canEditList(list)) continue;
 
     const listResult = await syncClient
       .from("task_lists")
@@ -1000,6 +1017,8 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   for (const list of standingLists) {
+    if (!canEditList(list)) continue;
+
     const taskError = await syncSharedTasks(list, updatedAt);
     if (taskError) return taskError;
   }
@@ -1182,6 +1201,13 @@ function updateSyncUi(message = "") {
   syncButton.title = configured
     ? (syncUser ? `Signed in as ${syncUser.email || "Supabase user"}` : "Sign in to sync tasks")
     : "Add Supabase settings to enable sync";
+}
+
+function reportSyncError(context, error) {
+  const message = error?.message || "Unknown sync error";
+  console.error(`${context}: ${message}`, error);
+  updateSyncUi("Sync error");
+  syncButton.title = `${context}: ${message}`;
 }
 
 function isSupabaseConfigured() {
@@ -1866,7 +1892,8 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     type: options.type || "standard",
     showDetails: Boolean(options.showDetails),
     ownerId: options.ownerId || "",
-    shared: Boolean(options.shared)
+    shared: Boolean(options.shared),
+    memberRole: options.memberRole || ""
   };
 }
 
@@ -1880,7 +1907,8 @@ function normalizeList(list) {
     type: list.type || "standard",
     showDetails: Boolean(list.showDetails),
     ownerId: list.ownerId || list.owner_id || "",
-    shared: Boolean(list.shared)
+    shared: Boolean(list.shared),
+    memberRole: list.memberRole || list.member_role || ""
   };
 }
 
@@ -1932,14 +1960,15 @@ function taskToRow(task, listId, position, updatedAt) {
   };
 }
 
-function rowToList(row, tasks) {
+function rowToList(row, tasks, memberRole = "") {
   return createList(row.name || "Untitled", Boolean(row.collapsed), tasks, {
     id: row.id,
     createdAt: row.created_at,
     type: row.type || "standard",
     showDetails: row.show_details,
     ownerId: row.owner_id,
-    shared: row.owner_id !== syncUser?.id
+    shared: row.owner_id !== syncUser?.id,
+    memberRole
   });
 }
 
@@ -1997,6 +2026,10 @@ function getStandingLists(sourceLists = lists) {
 
 function canManageList(list) {
   return !list.ownerId || list.ownerId === syncUser?.id;
+}
+
+function canEditList(list) {
+  return canManageList(list) || ["admin", "editor"].includes(list.memberRole);
 }
 
 function canShareList(list) {
