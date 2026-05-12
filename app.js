@@ -104,7 +104,7 @@ listForm.addEventListener("submit", (event) => {
   if (!name) return;
 
   const list = createList(name, false, [], {
-    ownerId: syncUser?.id || ""
+    ownerId: getActiveUserId()
   });
   lists = ensureTodayList([list, ...lists]);
   listForm.reset();
@@ -846,6 +846,9 @@ async function pushRemoteState() {
 
   window.clearTimeout(syncPushTimer);
   syncPushTimer = null;
+  await refreshSyncUser();
+  if (!syncUser) return;
+
   const updatedAt = new Date().toISOString();
   const sharedLists = getPendingSharedLists();
 
@@ -878,6 +881,15 @@ function getPendingSharedLists() {
 function clearPendingSharedSync() {
   syncPendingAllShared = false;
   syncPendingSharedListIds.clear();
+}
+
+async function refreshSyncUser() {
+  if (!syncClient) return;
+
+  const { data, error } = await syncClient.auth.getUser();
+  if (!error && data?.user) {
+    syncUser = data.user;
+  }
 }
 
 function subscribeToRemoteChanges() {
@@ -1029,6 +1041,8 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   const uniqueStandingLists = uniqueListsById(standingLists);
   if (uniqueStandingLists.length === 0) return null;
 
+  uniqueStandingLists.forEach(ensureManagedListOwner);
+
   const managedListRows = uniqueStandingLists
     .map((list, index) => ({ list, index }))
     .filter(({ list }) => canManageList(list))
@@ -1072,6 +1086,12 @@ function uniqueListsById(sourceLists) {
     seen.add(list.id);
     return true;
   });
+}
+
+function ensureManagedListOwner(list) {
+  if (!syncUser?.id || !canManageList(list)) return;
+
+  list.ownerId = syncUser.id;
 }
 
 async function syncSharedTasks(list, updatedAt) {
@@ -2104,6 +2124,10 @@ function normalizeTomorrowQueue(queue) {
 
 function findList(id) {
   return lists.find((list) => list.id === id);
+}
+
+function getActiveUserId() {
+  return syncUser?.id || "";
 }
 
 function getPrivateLists(sourceLists = lists) {
