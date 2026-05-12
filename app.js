@@ -3,9 +3,11 @@ const legacyStorageKey = "tasks.v1";
 const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
+const syncDeviceKey = "tasks.syncDeviceId.v1";
 const todayListId = "pinned-today";
 const todayListType = "today";
 const completedPreviewLimit = 2;
+const syncDebounceMs = 700;
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -13,6 +15,8 @@ const todayBoard = document.querySelector("#todayBoard");
 const listBoard = document.querySelector("#listBoard");
 const emptyState = document.querySelector("#emptyState");
 const themeToggle = document.querySelector("#themeToggle");
+const syncButton = document.querySelector("#syncButton");
+const syncStatus = document.querySelector("#syncStatus");
 const todayLabel = document.querySelector("#todayLabel");
 const filterMenuButton = document.querySelector("#filterMenuButton");
 const filterMenu = document.querySelector("#filterMenu");
@@ -45,6 +49,14 @@ const taskFormDrafts = new Map();
 let suppressHandleClick = false;
 let todayText = formatTodayDate();
 let rolloverTimer = null;
+let syncClient = null;
+let syncUser = null;
+let syncChannel = null;
+let syncPushTimer = null;
+let syncApplyingRemoteState = false;
+let syncLastRemoteUpdatedAt = "";
+const syncDeviceId = getOrCreateDeviceId();
+const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
 todayLabel.textContent = todayText;
 rollTomorrowQueueIntoToday();
@@ -375,14 +387,18 @@ themeToggle.addEventListener("click", () => {
   }
 });
 
+syncButton.addEventListener("click", handleSyncButtonClick);
+
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
     rollTomorrowQueueIntoToday({ renderAfter: true });
+    refreshRemoteState();
   }
 });
 
 window.addEventListener("focus", () => {
   rollTomorrowQueueIntoToday({ renderAfter: true });
+  refreshRemoteState();
 });
 
 if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
@@ -392,6 +408,7 @@ if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
 }
 
 render();
+initializeSync();
 
 function persistAndRender() {
   persistLists();
@@ -401,10 +418,243 @@ function persistAndRender() {
 function persistLists() {
   lists = ensureTodayList(lists);
   localStorage.setItem(storageKey, JSON.stringify(lists));
+  queueRemoteSync();
 }
 
 function persistTomorrowQueue() {
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  queueRemoteSync();
+}
+
+async function initializeSync() {
+  updateSyncUi();
+
+  if (!isSupabaseConfigured()) return;
+
+  if (!window.supabase?.createClient) {
+    updateSyncUi("Sync unavailable");
+    return;
+  }
+
+  syncClient = window.supabase.createClient(syncConfig.supabaseUrl, syncConfig.supabaseAnonKey, {
+    auth: {
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      persistSession: true
+    }
+  });
+
+  updateSyncUi("Checking sync...");
+
+  const { data, error } = await syncClient.auth.getSession();
+  if (error) {
+    updateSyncUi("Sync error");
+    return;
+  }
+
+  await handleAuthSession(data.session);
+
+  syncClient.auth.onAuthStateChange((_event, session) => {
+    handleAuthSession(session);
+  });
+}
+
+async function handleAuthSession(session) {
+  const nextUser = session?.user || null;
+
+  if (!nextUser) {
+    syncUser = null;
+    syncLastRemoteUpdatedAt = "";
+    clearRemoteSubscription();
+    updateSyncUi("Signed out");
+    return;
+  }
+
+  if (syncUser?.id === nextUser.id && syncLastRemoteUpdatedAt) {
+    updateSyncUi();
+    return;
+  }
+
+  syncUser = nextUser;
+  updateSyncUi("Loading sync...");
+  await loadRemoteState();
+  subscribeToRemoteChanges();
+}
+
+async function handleSyncButtonClick() {
+  if (!isSupabaseConfigured()) {
+    alert("Add your Supabase URL and anon key to sync-config.js, then run supabase-schema.sql in Supabase.");
+    return;
+  }
+
+  if (!syncClient) {
+    alert("Supabase is configured, but the sync library did not load. Check your internet connection and refresh.");
+    return;
+  }
+
+  if (syncUser) {
+    const shouldSignOut = askToConfirm("Sign out of synced tasks on this device?");
+    if (!shouldSignOut) return;
+    updateSyncUi("Signing out...");
+    await syncClient.auth.signOut();
+    return;
+  }
+
+  const email = askForText("Enter the email you want to use for synced tasks", "");
+  const trimmedEmail = email?.trim();
+  if (!trimmedEmail) return;
+
+  updateSyncUi("Sending link...");
+  const { error } = await syncClient.auth.signInWithOtp({
+    email: trimmedEmail,
+    options: {
+      emailRedirectTo: getSyncRedirectUrl()
+    }
+  });
+
+  if (error) {
+    updateSyncUi("Sign-in error");
+    alert(error.message || "Could not send the Supabase sign-in link.");
+    return;
+  }
+
+  updateSyncUi("Check email");
+  alert("Check your email for the Supabase sign-in link. Use the same email on each device.");
+}
+
+async function loadRemoteState() {
+  if (!syncClient || !syncUser) return;
+
+  const { data, error } = await syncClient
+    .from("task_documents")
+    .select("lists,tomorrow_queue,updated_at,device_id")
+    .eq("user_id", syncUser.id)
+    .maybeSingle();
+
+  if (error) {
+    updateSyncUi("Setup needed");
+    alert(`Supabase sync could not load. ${error.message}`);
+    return;
+  }
+
+  if (!data) {
+    await pushRemoteState();
+    return;
+  }
+
+  applyRemoteState(data);
+  updateSyncUi("Synced");
+}
+
+async function refreshRemoteState() {
+  if (!syncClient || !syncUser || document.hidden) return;
+  await loadRemoteState();
+}
+
+function queueRemoteSync() {
+  if (syncApplyingRemoteState || !syncClient || !syncUser) return;
+
+  window.clearTimeout(syncPushTimer);
+  updateSyncUi("Saving...");
+  syncPushTimer = window.setTimeout(() => {
+    pushRemoteState();
+  }, syncDebounceMs);
+}
+
+async function pushRemoteState() {
+  if (!syncClient || !syncUser) return;
+
+  window.clearTimeout(syncPushTimer);
+  syncPushTimer = null;
+  const updatedAt = new Date().toISOString();
+
+  const { data, error } = await syncClient
+    .from("task_documents")
+    .upsert({
+      user_id: syncUser.id,
+      lists: ensureTodayList(lists),
+      tomorrow_queue: tomorrowQueue,
+      updated_at: updatedAt,
+      device_id: syncDeviceId
+    }, {
+      onConflict: "user_id"
+    })
+    .select("updated_at")
+    .single();
+
+  if (error) {
+    updateSyncUi("Sync error");
+    return;
+  }
+
+  syncLastRemoteUpdatedAt = data?.updated_at || updatedAt;
+  updateSyncUi("Synced");
+}
+
+function subscribeToRemoteChanges() {
+  if (!syncClient || !syncUser) return;
+
+  clearRemoteSubscription();
+  syncChannel = syncClient
+    .channel(`task-document-${syncUser.id}`)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "task_documents",
+      filter: `user_id=eq.${syncUser.id}`
+    }, (payload) => {
+      const nextState = payload.new;
+      if (!nextState || nextState.device_id === syncDeviceId) return;
+      if (syncLastRemoteUpdatedAt && nextState.updated_at <= syncLastRemoteUpdatedAt) return;
+      applyRemoteState(nextState);
+      updateSyncUi("Updated");
+    })
+    .subscribe();
+}
+
+function clearRemoteSubscription() {
+  if (!syncClient || !syncChannel) return;
+
+  syncClient.removeChannel(syncChannel);
+  syncChannel = null;
+}
+
+function applyRemoteState(remoteState) {
+  syncApplyingRemoteState = true;
+  lists = Array.isArray(remoteState.lists)
+    ? ensureTodayList(remoteState.lists.map(normalizeList))
+    : ensureTodayList([createList("Personal")]);
+  tomorrowQueue = Array.isArray(remoteState.tomorrow_queue)
+    ? remoteState.tomorrow_queue.map(normalizeTomorrowQueueItem).filter(Boolean)
+    : [];
+  syncLastRemoteUpdatedAt = remoteState.updated_at || "";
+
+  localStorage.setItem(storageKey, JSON.stringify(lists));
+  localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  syncApplyingRemoteState = false;
+
+  rollTomorrowQueueIntoToday();
+  render();
+}
+
+function updateSyncUi(message = "") {
+  const configured = isSupabaseConfigured();
+  const defaultMessage = configured ? (syncUser ? "Synced" : "Signed out") : "Local";
+
+  syncStatus.textContent = message || defaultMessage;
+  syncButton.textContent = configured ? (syncUser ? "Account" : "Sign in") : "Local";
+  syncButton.classList.toggle("is-active", configured && Boolean(syncUser));
+  syncButton.title = configured
+    ? (syncUser ? `Signed in as ${syncUser.email || "Supabase user"}` : "Sign in to sync tasks")
+    : "Add Supabase settings to enable sync";
+}
+
+function isSupabaseConfigured() {
+  return Boolean(syncConfig.supabaseUrl && syncConfig.supabaseAnonKey);
+}
+
+function getSyncRedirectUrl() {
+  return syncConfig.redirectUrl || window.location.href.split("#")[0];
 }
 
 function loadLists() {
@@ -1429,6 +1679,15 @@ function getTomorrowDateKey(date = new Date()) {
   const tomorrow = new Date(date);
   tomorrow.setDate(tomorrow.getDate() + 1);
   return getDateKey(tomorrow);
+}
+
+function getOrCreateDeviceId() {
+  const existing = localStorage.getItem(syncDeviceKey);
+  if (existing) return existing;
+
+  const nextId = uid();
+  localStorage.setItem(syncDeviceKey, nextId);
+  return nextId;
 }
 
 function uid() {

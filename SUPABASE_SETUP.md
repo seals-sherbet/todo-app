@@ -1,0 +1,57 @@
+# Supabase Sync Setup
+
+This app can run locally without Supabase. Sync turns on only after `sync-config.js` has a Supabase project URL and public anon key.
+
+## 1. Create the Supabase project
+
+1. Go to Supabase and create a new project.
+2. Open the SQL editor.
+3. Paste and run the contents of `supabase-schema.sql`.
+
+## 2. Add the public app credentials
+
+In Supabase, go to Project Settings > API and copy:
+
+- Project URL
+- anon public key
+
+Then update `sync-config.js`:
+
+```js
+window.TASKS_SYNC_CONFIG = {
+  supabaseUrl: "https://YOUR-PROJECT.supabase.co",
+  supabaseAnonKey: "YOUR-ANON-PUBLIC-KEY",
+  redirectUrl: "https://seals-sherbet.github.io/todo-app/"
+};
+```
+
+The anon key is designed to be public in browser apps. Do not use the service role key in this file.
+
+## 3. Configure auth redirects
+
+In Supabase, go to Authentication > URL Configuration.
+
+Set the Site URL to:
+
+```text
+https://seals-sherbet.github.io/todo-app/
+```
+
+Add this Redirect URL:
+
+```text
+https://seals-sherbet.github.io/todo-app/
+```
+
+## 4. Deploy
+
+Commit the changed files and push to GitHub. After GitHub Pages updates, open the app and tap `Sign in`.
+
+Use the same email address on each device. The first signed-in device uploads the current local lists; other devices download that synced copy after sign-in.
+
+## Current sync behavior
+
+- Lists, tasks, completed state, ordering, and tomorrow queue sync as one task document per signed-in user.
+- Changes save locally first, then sync to Supabase.
+- Two devices editing at exactly the same time use last save wins.
+- Shared lists between two different people will need a second database pass after personal device sync is working.

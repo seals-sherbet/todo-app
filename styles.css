@@ -89,6 +89,28 @@ button {
   padding: 6px 0 8px;
 }
 
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sync-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.sync-status {
+  max-width: 92px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .today-section {
   margin-bottom: 8px;
 }
@@ -110,7 +132,8 @@ h1 {
 .icon-button,
 .primary-button,
 .task-action,
-.filter-menu-button {
+.filter-menu-button,
+.sync-button {
   min-height: 26px;
   border: 1px solid var(--line);
   border-radius: 6px;
@@ -121,6 +144,19 @@ h1 {
 .icon-button {
   min-width: 48px;
   padding: 0 8px;
+}
+
+.sync-button {
+  min-width: 46px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.sync-button.is-active {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
+  color: var(--accent-strong);
 }
 
 .composer,
@@ -960,6 +996,19 @@ button:focus-visible {
   .app-shell {
     padding-left: 10px;
     padding-right: 10px;
+  }
+
+  .topbar {
+    align-items: flex-start;
+  }
+
+  .topbar-actions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  .sync-status {
+    max-width: 74px;
   }
 
   .form-row,

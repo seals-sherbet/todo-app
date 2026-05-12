@@ -20,9 +20,15 @@
           <p class="eyebrow" id="todayLabel"></p>
           <h1>Tasks</h1>
         </div>
-        <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme">
-          <span aria-hidden="true">Theme</span>
-        </button>
+        <div class="topbar-actions">
+          <div class="sync-control" aria-live="polite">
+            <span class="sync-status" id="syncStatus">Local</span>
+            <button class="sync-button" id="syncButton" type="button">Sync</button>
+          </div>
+          <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme">
+            <span aria-hidden="true">Theme</span>
+          </button>
+        </div>
       </header>
 
       <section class="today-section" aria-label="Today list">
@@ -75,6 +81,8 @@
       </section>
     </main>
 
+    <script src="sync-config.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="app.js"></script>
   </body>
 </html>
