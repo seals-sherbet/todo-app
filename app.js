@@ -368,6 +368,7 @@ async function handleTaskBoardClick(event) {
     openMenu = null;
     persistTomorrowQueue();
     persistAndRender();
+    scrollTomorrowQueueToBottom();
     return;
   }
 
@@ -415,7 +416,7 @@ filterMenu.addEventListener("click", (event) => {
 tomorrowToggle.addEventListener("click", () => {
   tomorrowCollapsed = !tomorrowCollapsed;
   localStorage.setItem(tomorrowCollapsedKey, String(tomorrowCollapsed));
-  renderTomorrowQueue();
+  renderTomorrowQueue({ scrollToBottom: true });
 });
 
 tomorrowForm.addEventListener("submit", (event) => {
@@ -427,7 +428,7 @@ tomorrowForm.addEventListener("submit", (event) => {
   tomorrowForm.reset();
   tomorrowInput.focus();
   persistTomorrowQueue();
-  renderTomorrowQueue();
+  renderTomorrowQueue({ scrollToBottom: true });
 });
 
 tomorrowForm.addEventListener("keydown", (event) => {
@@ -1243,7 +1244,9 @@ function renderFilterMenu() {
   });
 }
 
-function renderTomorrowQueue() {
+function renderTomorrowQueue(options = {}) {
+  const { scrollToBottom = false } = options;
+
   tomorrowToggle.setAttribute("aria-expanded", String(!tomorrowCollapsed));
   tomorrowBody.hidden = tomorrowCollapsed;
   tomorrowCount.textContent = tomorrowQueue.length === 1 ? "1 queued" : `${tomorrowQueue.length} queued`;
@@ -1259,6 +1262,15 @@ function renderTomorrowQueue() {
 
   tomorrowList.replaceChildren(...tomorrowQueue.map(createTomorrowQueueElement));
   updateTomorrowFooterSpace();
+  if (scrollToBottom) {
+    scrollTomorrowQueueToBottom();
+  }
+}
+
+function scrollTomorrowQueueToBottom() {
+  window.requestAnimationFrame(() => {
+    tomorrowList.scrollTop = tomorrowList.scrollHeight;
+  });
 }
 
 function createTomorrowQueueElement(entry) {
