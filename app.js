@@ -57,6 +57,7 @@ let syncPushTimer = null;
 let syncRefreshTimer = null;
 let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
+let syncSkipRemoteRefreshUntil = 0;
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
@@ -563,6 +564,7 @@ async function loadRemoteState() {
     return;
   }
 
+  const localStandingLists = getStandingLists(lists);
   const privateDocument = privateResult.data;
   const privateRemoteLists = Array.isArray(privateDocument?.lists)
     ? privateDocument.lists.map(normalizeList)
@@ -588,14 +590,17 @@ async function loadRemoteState() {
     }
   } else if (!privateDocument) {
     await pushPrivateState(privateLists, nextTomorrowQueue);
-    if (sharedResult.lists.length === 0 && getStandingLists(lists).length > 0) {
-      await pushSharedLists(getStandingLists(lists));
-      sharedResult = await fetchSharedLists();
-      if (sharedResult.error) {
-        updateSyncUi("Setup needed");
-        alert(`Shared list sync could not load. ${sharedResult.error.message}`);
-        return;
-      }
+  }
+
+  const sharedListIds = new Set(sharedResult.lists.map((list) => list.id));
+  const localListsMissingFromRemote = localStandingLists.filter((list) => canManageList(list) && !sharedListIds.has(list.id));
+  if (localListsMissingFromRemote.length > 0) {
+    await pushSharedLists(localStandingLists.filter(canManageList));
+    sharedResult = await fetchSharedLists();
+    if (sharedResult.error) {
+      updateSyncUi("Setup needed");
+      alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+      return;
     }
   }
 
@@ -609,6 +614,7 @@ async function loadRemoteState() {
 
 async function refreshRemoteState() {
   if (!syncClient || !syncUser || document.hidden) return;
+  if (Date.now() < syncSkipRemoteRefreshUntil) return;
   await loadRemoteState();
 }
 
@@ -832,7 +838,7 @@ async function shareListByEmail(list) {
     return;
   }
 
-  const email = normalizeEmail(askForText(`Share "${list.name}" with email`, ""));
+  const email = normalizeEmail(askForTextWithoutRemoteRefresh(`Share "${list.name}" with email`, ""));
   if (!email) return;
 
   if (!isValidEmail(email)) {
@@ -868,6 +874,13 @@ async function shareListByEmail(list) {
 
   updateSyncUi("Synced");
   alert(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
+}
+
+function askForTextWithoutRemoteRefresh(message, currentValue) {
+  syncSkipRemoteRefreshUntil = Date.now() + 3000;
+  const value = askForText(message, currentValue);
+  syncSkipRemoteRefreshUntil = Date.now() + 3000;
+  return value;
 }
 
 async function syncUserProfile() {
