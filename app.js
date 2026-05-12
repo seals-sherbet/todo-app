@@ -21,6 +21,16 @@ const emptyState = document.querySelector("#emptyState");
 const themeToggle = document.querySelector("#themeToggle");
 const syncButton = document.querySelector("#syncButton");
 const syncStatus = document.querySelector("#syncStatus");
+const syncAuthDialog = document.querySelector("#syncAuthDialog");
+const syncAuthClose = document.querySelector("#syncAuthClose");
+const syncAuthTitle = document.querySelector("#syncAuthTitle");
+const syncAuthCopy = document.querySelector("#syncAuthCopy");
+const syncAuthMessage = document.querySelector("#syncAuthMessage");
+const syncEmailForm = document.querySelector("#syncEmailForm");
+const syncEmailInput = document.querySelector("#syncEmailInput");
+const syncCodeForm = document.querySelector("#syncCodeForm");
+const syncCodeInput = document.querySelector("#syncCodeInput");
+const syncCodeBack = document.querySelector("#syncCodeBack");
 const todayLabel = document.querySelector("#todayLabel");
 const filterMenuButton = document.querySelector("#filterMenuButton");
 const filterMenu = document.querySelector("#filterMenu");
@@ -64,6 +74,7 @@ let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
 let syncSkipRemoteRefreshUntil = 0;
 let syncDialogOpen = false;
+let pendingOtpEmail = "";
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
@@ -443,6 +454,11 @@ tomorrowList.addEventListener("click", (event) => {
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
 
+  if (!syncAuthDialog.hidden) {
+    closeSyncAuthDialog();
+    return;
+  }
+
   if (filterMenuOpen) {
     filterMenuOpen = false;
     renderFilterMenu();
@@ -465,6 +481,15 @@ themeToggle.addEventListener("click", () => {
 });
 
 syncButton.addEventListener("click", handleSyncButtonClick);
+syncEmailForm.addEventListener("submit", handleSyncEmailSubmit);
+syncCodeForm.addEventListener("submit", handleSyncCodeSubmit);
+syncAuthClose.addEventListener("click", closeSyncAuthDialog);
+syncCodeBack.addEventListener("click", () => showSyncEmailStep());
+syncAuthDialog.addEventListener("click", (event) => {
+  if (event.target === syncAuthDialog) {
+    closeSyncAuthDialog();
+  }
+});
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) {
@@ -559,6 +584,57 @@ async function handleAuthSession(session) {
   subscribeToRemoteChanges();
 }
 
+function openSyncAuthDialog() {
+  pendingOtpEmail = normalizeEmail(syncEmailInput.value || pendingOtpEmail);
+  syncEmailInput.value = pendingOtpEmail;
+  syncCodeInput.value = "";
+  showSyncEmailStep();
+  syncAuthDialog.hidden = false;
+  document.body.classList.add("has-modal");
+  window.setTimeout(() => {
+    syncEmailInput.focus();
+    syncEmailInput.select();
+  }, 0);
+}
+
+function closeSyncAuthDialog() {
+  syncAuthDialog.hidden = true;
+  document.body.classList.remove("has-modal");
+  setSyncAuthBusy(syncEmailForm, false);
+  setSyncAuthBusy(syncCodeForm, false);
+  setSyncAuthMessage("");
+}
+
+function showSyncEmailStep(message = "") {
+  syncAuthTitle.textContent = "Sign in to sync";
+  syncAuthCopy.textContent = "Enter your email and we will send a 6-digit code.";
+  syncEmailForm.hidden = false;
+  syncCodeForm.hidden = true;
+  setSyncAuthMessage(message);
+  window.setTimeout(() => syncEmailInput.focus(), 0);
+}
+
+function showSyncCodeStep(message = "") {
+  syncAuthTitle.textContent = "Enter code";
+  syncAuthCopy.textContent = "Use the 6-digit code from your email.";
+  syncEmailForm.hidden = true;
+  syncCodeForm.hidden = false;
+  syncCodeInput.value = "";
+  setSyncAuthMessage(message);
+  window.setTimeout(() => syncCodeInput.focus(), 0);
+}
+
+function setSyncAuthMessage(message = "", isError = false) {
+  syncAuthMessage.textContent = message;
+  syncAuthMessage.classList.toggle("is-error", Boolean(isError));
+}
+
+function setSyncAuthBusy(form, isBusy) {
+  form.querySelectorAll("input, button").forEach((control) => {
+    control.disabled = isBusy;
+  });
+}
+
 async function handleSyncButtonClick() {
   if (!isSupabaseConfigured()) {
     notifyUser("Add your Supabase URL and anon key to sync-config.js, then run supabase-schema.sql in Supabase.");
@@ -578,26 +654,84 @@ async function handleSyncButtonClick() {
     return;
   }
 
-  const email = askForText("Enter the email you want to use for synced tasks", "");
-  const trimmedEmail = email?.trim();
-  if (!trimmedEmail) return;
+  openSyncAuthDialog();
+}
 
-  updateSyncUi("Sending link...");
-  const { error } = await syncClient.auth.signInWithOtp({
-    email: trimmedEmail,
-    options: {
-      emailRedirectTo: getSyncRedirectUrl()
-    }
-  });
+async function handleSyncEmailSubmit(event) {
+  event.preventDefault();
+  if (!syncClient) return;
 
-  if (error) {
-    updateSyncUi("Sign-in error");
-    notifyUser(error.message || "Could not send the Supabase sign-in link.");
+  const email = normalizeEmail(syncEmailInput.value);
+  if (!email) {
+    setSyncAuthMessage("Enter an email address.", true);
     return;
   }
 
-  updateSyncUi("Check email");
-  notifyUser("Check your email for the Supabase sign-in link. Use the same email on each device.");
+  pendingOtpEmail = email;
+  setSyncAuthBusy(syncEmailForm, true);
+  setSyncAuthMessage("");
+  updateSyncUi("Sending code...");
+
+  const { error } = await syncClient.auth.signInWithOtp({
+    email,
+    options: {
+      shouldCreateUser: true
+    }
+  });
+
+  setSyncAuthBusy(syncEmailForm, false);
+
+  if (error) {
+    updateSyncUi("Sign-in error");
+    setSyncAuthMessage(error.message || "Could not send the code.", true);
+    return;
+  }
+
+  updateSyncUi("Enter code");
+  showSyncCodeStep(`Code sent to ${email}.`);
+}
+
+async function handleSyncCodeSubmit(event) {
+  event.preventDefault();
+  if (!syncClient) return;
+
+  const token = syncCodeInput.value.replace(/\s+/g, "");
+  if (!pendingOtpEmail || !token) {
+    setSyncAuthMessage("Enter the code from your email.", true);
+    return;
+  }
+
+  setSyncAuthBusy(syncCodeForm, true);
+  setSyncAuthMessage("");
+  updateSyncUi("Verifying...");
+
+  const { data, error } = await syncClient.auth.verifyOtp({
+    email: pendingOtpEmail,
+    token,
+    type: "email"
+  });
+
+  setSyncAuthBusy(syncCodeForm, false);
+
+  if (error) {
+    updateSyncUi("Sign-in error");
+    setSyncAuthMessage(error.message || "That code did not work.", true);
+    return;
+  }
+
+  closeSyncAuthDialog();
+  updateSyncUi("Loading sync...");
+  window.setTimeout(async () => {
+    if (syncUser) return;
+    try {
+      const sessionResult = await syncClient.auth.getSession();
+      await handleAuthSession(sessionResult.data.session || data.session);
+    } catch {
+      if (data.session) {
+        await handleAuthSession(data.session);
+      }
+    }
+  }, 250);
 }
 
 async function loadRemoteState() {
@@ -1011,10 +1145,6 @@ function updateSyncUi(message = "") {
 
 function isSupabaseConfigured() {
   return Boolean(syncConfig.supabaseUrl && syncConfig.supabaseAnonKey);
-}
-
-function getSyncRedirectUrl() {
-  return syncConfig.redirectUrl || window.location.href.split("#")[0];
 }
 
 function loadLists() {

@@ -20,14 +20,27 @@ Then update `sync-config.js`:
 ```js
 window.TASKS_SYNC_CONFIG = {
   supabaseUrl: "https://YOUR-PROJECT.supabase.co",
-  supabaseAnonKey: "YOUR-ANON-PUBLIC-KEY",
-  redirectUrl: "https://seals-sherbet.github.io/todo-app/"
+  supabaseAnonKey: "YOUR-ANON-PUBLIC-KEY"
 };
 ```
 
 The anon key is designed to be public in browser apps. Do not use the service role key in this file.
 
-## 3. Configure auth redirects
+## 3. Configure email code sign-in
+
+In Supabase, go to Authentication > Email Templates > Magic Link.
+
+Change the email body so it includes the 6-digit token instead of only a magic link. For example:
+
+```html
+<h2>Your to-do app login code</h2>
+<p>Enter this code in the app:</p>
+<h1>{{ .Token }}</h1>
+```
+
+Save the template. This lets the iPhone Home Screen app sign in without the email link opening Safari.
+
+## 4. Configure auth redirects
 
 In Supabase, go to Authentication > URL Configuration.
 
@@ -43,11 +56,11 @@ Add this Redirect URL:
 https://seals-sherbet.github.io/todo-app/
 ```
 
-## 4. Deploy
+## 5. Deploy
 
 Commit the changed files and push to GitHub. After GitHub Pages updates, open the app and tap `Sign in`.
 
-Use the same email address on each device. The first signed-in device uploads the current local lists; other devices download that synced copy after sign-in.
+Use the same email address on each device. The first signed-in device uploads the current local lists; other devices download that synced copy after sign-in. On iPhone, open the Home Screen app, request the code, then enter the emailed code in the Home Screen app.
 
 ## Current sync behavior
 

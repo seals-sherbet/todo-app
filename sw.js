@@ -1,4 +1,4 @@
-const cacheName = "tasks-cache-v67";
+const cacheName = "tasks-cache-v68";
 const assets = [
   "./",
   "./index.html",

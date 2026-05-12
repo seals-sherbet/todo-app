@@ -64,6 +64,10 @@ body {
   font-size: 14px;
 }
 
+body.has-modal {
+  overflow: hidden;
+}
+
 button,
 input,
 select {
@@ -157,6 +161,83 @@ h1 {
 .sync-button.is-active {
   border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
   color: var(--accent-strong);
+}
+
+.sync-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  padding: 18px;
+}
+
+.sync-auth-card {
+  width: min(360px, 100%);
+  border: 2px solid var(--list-border);
+  border-radius: 18px;
+  background: var(--list-card);
+  box-shadow: 0 18px 42px rgba(52, 55, 93, 0.18);
+  padding: 16px;
+}
+
+.sync-auth-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sync-auth-header h2 {
+  margin: 0;
+  color: var(--blue);
+  font-size: 1.1rem;
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.sync-auth-close,
+.secondary-button {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--text);
+  padding: 0 12px;
+  font: inherit;
+}
+
+.sync-auth-close {
+  font-size: 0.78rem;
+}
+
+.sync-auth-copy,
+.sync-auth-message {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.sync-auth-form {
+  margin-top: 12px;
+}
+
+.sync-auth-form input {
+  min-height: 34px;
+  border-radius: 10px;
+  background: var(--task-row-bg);
+}
+
+.sync-auth-actions {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+}
+
+.sync-auth-message.is-error {
+  color: var(--danger);
 }
 
 .composer,
