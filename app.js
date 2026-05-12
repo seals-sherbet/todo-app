@@ -46,6 +46,7 @@ let dragState = null;
 let openMenu = null;
 let filterMenuOpen = false;
 let editingListId = null;
+let editingTask = null;
 let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
 let expandedCompletedLists = new Set();
 let activeTaskFormListId = null;
@@ -105,6 +106,13 @@ taskBoards.forEach((board) => {
 });
 
 function handleTaskBoardSubmit(event) {
+  const taskRenameForm = event.target.closest("form[data-task-rename-form]");
+  if (taskRenameForm) {
+    event.preventDefault();
+    finishTaskRename(taskRenameForm);
+    return;
+  }
+
   const renameForm = event.target.closest("form[data-list-rename-form]");
   if (renameForm) {
     event.preventDefault();
@@ -133,6 +141,20 @@ function handleTaskBoardSubmit(event) {
 }
 
 function handleTaskBoardKeydown(event) {
+  const taskRenameInput = event.target.closest("input[data-task-rename-input]");
+  if (taskRenameInput && event.key === "Enter" && !event.isComposing) {
+    event.preventDefault();
+    finishTaskRename(taskRenameInput.form);
+    return;
+  }
+
+  if (taskRenameInput && event.key === "Escape") {
+    event.preventDefault();
+    editingTask = null;
+    render();
+    return;
+  }
+
   const renameInput = event.target.closest("input[data-list-rename-input]");
   if (renameInput && event.key === "Enter" && !event.isComposing) {
     event.preventDefault();
@@ -157,6 +179,12 @@ function handleTaskBoardKeydown(event) {
 }
 
 function handleTaskBoardFocusout(event) {
+  const taskRenameInput = event.target.closest("input[data-task-rename-input]");
+  if (taskRenameInput) {
+    finishTaskRename(taskRenameInput.form);
+    return;
+  }
+
   const renameInput = event.target.closest("input[data-list-rename-input]");
   if (renameInput) {
     finishListRename(renameInput.form);
@@ -218,6 +246,9 @@ async function handleTaskBoardClick(event) {
     if (list.collapsed && activeTaskFormListId === list.id) {
       activeTaskFormListId = null;
     }
+    if (list.collapsed && editingTask?.listId === list.id) {
+      editingTask = null;
+    }
     persistAndRender();
     return;
   }
@@ -250,6 +281,8 @@ async function handleTaskBoardClick(event) {
   if (button.dataset.action === "edit-list") {
     if (isTodayList(list)) return;
     editingListId = list.id;
+    editingTask = null;
+    activeTaskFormListId = null;
     openMenu = null;
     render();
     focusListRenameInput(list.id);
@@ -272,6 +305,9 @@ async function handleTaskBoardClick(event) {
     const deletedListId = list.id;
     lists = lists.filter((item) => item.id !== list.id);
     expandedCompletedLists.delete(list.id);
+    if (editingTask?.listId === list.id) {
+      editingTask = null;
+    }
     clearTaskFormDraft(list.id);
     if (activeTaskFormListId === list.id) {
       activeTaskFormListId = null;
@@ -296,21 +332,28 @@ async function handleTaskBoardClick(event) {
   }
 
   if (button.dataset.action === "edit-task") {
-    const nextTitle = askForText("Edit task", task.title);
-    if (nextTitle === null) return;
-    const trimmed = nextTitle.trim();
-    if (trimmed) task.title = trimmed;
+    editingTask = { listId: list.id, taskId: task.id };
+    activeTaskFormListId = null;
     openMenu = null;
+    render();
+    focusTaskRenameInput(list.id, task.id);
+    return;
   }
 
   if (button.dataset.action === "delete-task") {
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
+    if (isEditingTask(list.id, task.id)) {
+      editingTask = null;
+    }
     openMenu = null;
   }
 
   if (button.dataset.action === "move-task-tomorrow") {
     tomorrowQueue.push(createTomorrowQueueItem(task.title));
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
+    if (isEditingTask(list.id, task.id)) {
+      editingTask = null;
+    }
     openMenu = null;
     persistTomorrowQueue();
     persistAndRender();
@@ -710,6 +753,8 @@ function clearRemoteSubscription() {
 
 function applyRemoteState(remoteState) {
   syncApplyingRemoteState = true;
+  editingListId = null;
+  editingTask = null;
   lists = Array.isArray(remoteState.lists)
     ? ensureTodayList(remoteState.lists.map(normalizeList))
     : ensureTodayList([createList("Personal")]);
@@ -1280,6 +1325,28 @@ function createListRenameForm(list) {
   return form;
 }
 
+function createTaskRenameForm(task, list) {
+  const form = document.createElement("form");
+  form.className = "task-rename-form";
+  form.setAttribute("data-task-rename-form", "");
+  form.dataset.listId = list.id;
+  form.dataset.taskId = task.id;
+  form.autocomplete = "off";
+
+  const input = document.createElement("input");
+  input.className = "task-rename-input";
+  input.name = "title";
+  input.type = "text";
+  input.value = task.title;
+  input.required = true;
+  input.maxLength = 120;
+  input.dataset.taskRenameInput = "";
+  input.setAttribute("aria-label", `Rename ${task.title}`);
+
+  form.append(input);
+  return form;
+}
+
 function createTaskElement(task, list) {
   const item = document.createElement("li");
   item.className = `task-row${task.completed ? " is-complete" : ""}`;
@@ -1300,9 +1367,8 @@ function createTaskElement(task, list) {
   check.textContent = task.completed ? "✓" : "";
 
   const body = document.createElement("div");
-  const title = document.createElement("p");
-  title.className = "task-title";
-  title.textContent = task.title;
+  body.className = "task-body";
+  const isEditing = isEditingTask(list.id, task.id);
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
@@ -1314,8 +1380,15 @@ function createTaskElement(task, list) {
     }
   }
 
-  body.append(title);
-  if (meta.childElementCount > 0) {
+  if (isEditing) {
+    body.append(createTaskRenameForm(task, list));
+  } else {
+    const title = document.createElement("p");
+    title.className = "task-title";
+    title.textContent = task.title;
+    body.append(title);
+  }
+  if (!isEditing && meta.childElementCount > 0) {
     body.append(meta);
   }
 
@@ -1515,6 +1588,23 @@ function finishListRename(form) {
   }
 
   editingListId = null;
+  openMenu = null;
+  persistAndRender();
+}
+
+function finishTaskRename(form) {
+  const listId = form?.dataset.listId;
+  const taskId = form?.dataset.taskId;
+  const list = findList(listId);
+  const task = list?.tasks.find((item) => item.id === taskId);
+  if (!list || !task || !isEditingTask(list.id, task.id)) return;
+
+  const nextTitle = form.elements.title.value.trim();
+  if (nextTitle) {
+    task.title = nextTitle;
+  }
+
+  editingTask = null;
   openMenu = null;
   persistAndRender();
 }
@@ -1791,6 +1881,14 @@ function focusListRenameInput(listId) {
   input.select();
 }
 
+function focusTaskRenameInput(listId, taskId) {
+  const input = findInTaskBoards(`[data-list-id="${listId}"] [data-task-id="${taskId}"] input[data-task-rename-input]`);
+  if (!input) return;
+
+  input.focus();
+  input.select();
+}
+
 function handleDragPointerDown(event) {
   const handle = event.target.closest("[data-drag-type]");
   if (!handle || !isInsideTaskBoard(handle) || event.button > 0) return;
@@ -1962,6 +2060,9 @@ function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
 
   targetList.tasks.splice(insertIndex, 0, task);
   targetList.collapsed = false;
+  if (isEditingTask(sourceListId, taskId)) {
+    editingTask = null;
+  }
   persistAndRender();
 }
 
@@ -1971,6 +2072,10 @@ function moveTaskToOpenBottom(list, taskId) {
 
   const [task] = list.tasks.splice(sourceIndex, 1);
   list.tasks.push(task);
+}
+
+function isEditingTask(listId, taskId) {
+  return editingTask?.listId === listId && editingTask?.taskId === taskId;
 }
 
 function getDragSourceElement() {

@@ -611,6 +611,22 @@ button:focus-visible {
   text-decoration: none;
 }
 
+.task-body,
+.task-rename-form {
+  min-width: 0;
+}
+
+.task-rename-input {
+  min-height: 24px;
+  border-color: color-mix(in srgb, var(--line) 70%, transparent);
+  background: transparent;
+  color: var(--task-title);
+  padding: 0 6px;
+  font-size: 0.88rem;
+  font-weight: 400;
+  line-height: 1.15;
+}
+
 .check {
   position: relative;
   display: inline-grid;
@@ -988,6 +1004,7 @@ button:focus-visible {
   select,
   textarea,
   .list-rename-input,
+  .task-rename-input,
   .inline-task-form input[name="title"],
   .tomorrow-form input {
     font-size: 16px;
