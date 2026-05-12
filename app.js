@@ -972,34 +972,74 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
 async function pushSharedLists(standingLists = getStandingLists(lists), updatedAt = new Date().toISOString()) {
   if (standingLists.length === 0) return null;
 
-  const listRows = standingLists.map((list, index) => listToRow(list, index, updatedAt));
-  const listResult = await syncClient
-    .from("task_lists")
-    .upsert(listRows, {
-      onConflict: "id"
-    });
+  const managedListRows = standingLists
+    .map((list, index) => ({ list, index }))
+    .filter(({ list }) => canManageList(list))
+    .map(({ list, index }) => listToRow(list, index, updatedAt));
 
-  if (listResult.error) return listResult.error;
+  if (managedListRows.length > 0) {
+    const listResult = await syncClient
+      .from("task_lists")
+      .upsert(managedListRows, {
+        onConflict: "id"
+      });
+
+    if (listResult.error) return listResult.error;
+  }
+
+  for (const [index, list] of standingLists.entries()) {
+    if (canManageList(list)) continue;
+
+    const listResult = await syncClient
+      .from("task_lists")
+      .update(listToEditableRow(list, index, updatedAt))
+      .eq("id", list.id);
+
+    if (listResult.error) return listResult.error;
+  }
 
   for (const list of standingLists) {
-    const deleteResult = await syncClient
-      .from("tasks")
-      .delete()
-      .eq("list_id", list.id);
+    const taskError = await syncSharedTasks(list, updatedAt);
+    if (taskError) return taskError;
+  }
 
-    if (deleteResult.error) return deleteResult.error;
+  return null;
+}
 
-    const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
-    if (taskRows.length === 0) continue;
+async function syncSharedTasks(list, updatedAt) {
+  const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
 
+  if (taskRows.length > 0) {
     const taskResult = await syncClient
       .from("tasks")
-      .insert(taskRows);
+      .upsert(taskRows, {
+        onConflict: "id"
+      });
 
     if (taskResult.error) return taskResult.error;
   }
 
-  return null;
+  const existingResult = await syncClient
+    .from("tasks")
+    .select("id")
+    .eq("list_id", list.id);
+
+  if (existingResult.error) return existingResult.error;
+
+  const localTaskIds = new Set(taskRows.map((task) => task.id));
+  const staleTaskIds = (existingResult.data || [])
+    .map((task) => task.id)
+    .filter((taskId) => !localTaskIds.has(taskId));
+
+  if (staleTaskIds.length === 0) return null;
+
+  const deleteResult = await syncClient
+    .from("tasks")
+    .delete()
+    .eq("list_id", list.id)
+    .in("id", staleTaskIds);
+
+  return deleteResult.error;
 }
 
 async function deleteRemoteList(listId) {
@@ -1840,6 +1880,19 @@ function listToRow(list, position, updatedAt) {
   return {
     id: list.id,
     owner_id: list.ownerId || syncUser.id,
+    name: list.name,
+    collapsed: Boolean(list.collapsed),
+    type: list.type || "standard",
+    show_details: Boolean(list.showDetails),
+    created_at: list.createdAt || updatedAt,
+    position,
+    updated_at: updatedAt,
+    device_id: syncDeviceId
+  };
+}
+
+function listToEditableRow(list, position, updatedAt) {
+  return {
     name: list.name,
     collapsed: Boolean(list.collapsed),
     type: list.type || "standard",
