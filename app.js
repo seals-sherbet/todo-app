@@ -74,6 +74,8 @@ let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
 let syncSkipRemoteRefreshUntil = 0;
 let syncDialogOpen = false;
+let syncPendingAllShared = false;
+let syncPendingSharedListIds = new Set();
 let pendingOtpEmail = "";
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
@@ -99,10 +101,13 @@ listForm.addEventListener("submit", (event) => {
 
   if (!name) return;
 
-  lists = ensureTodayList([createList(name), ...lists]);
+  const list = createList(name, false, [], {
+    ownerId: syncUser?.id || ""
+  });
+  lists = ensureTodayList([list, ...lists]);
   listForm.reset();
   listName.focus();
-  persistAndRender();
+  persistAndRender({ sharedListIds: [list.id] });
 });
 
 taskBoards.forEach((board) => {
@@ -147,7 +152,7 @@ function handleTaskBoardSubmit(event) {
   list.collapsed = false;
   clearTaskFormDraft(list.id);
   activeTaskFormListId = list.id;
-  persistAndRender();
+  persistAndRender({ sharedListIds: [list.id] });
   focusTaskInput(list.id);
 }
 
@@ -260,7 +265,7 @@ async function handleTaskBoardClick(event) {
     if (list.collapsed && editingTask?.listId === list.id) {
       editingTask = null;
     }
-    persistAndRender();
+    persistAndRender({ sharedListIds: [list.id] });
     return;
   }
 
@@ -275,7 +280,7 @@ async function handleTaskBoardClick(event) {
   if (button.dataset.action === "toggle-fields") {
     list.showDetails = !list.showDetails;
     openMenu = null;
-    persistAndRender();
+    persistAndRender({ sharedListIds: [list.id] });
     return;
   }
 
@@ -324,7 +329,7 @@ async function handleTaskBoardClick(event) {
       activeTaskFormListId = null;
     }
     openMenu = null;
-    persistAndRender();
+    persistAndRender({ syncShared: false });
     await deleteRemoteList(deletedListId);
     return;
   }
@@ -367,12 +372,12 @@ async function handleTaskBoardClick(event) {
     }
     openMenu = null;
     persistTomorrowQueue();
-    persistAndRender();
+    persistAndRender({ sharedListIds: [list.id] });
     scrollTomorrowQueueToBottom();
     return;
   }
 
-  persistAndRender();
+  persistAndRender({ sharedListIds: [list.id] });
 }
 
 document.addEventListener("click", (event) => {
@@ -513,20 +518,20 @@ if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
 render();
 initializeSync();
 
-function persistAndRender() {
-  persistLists();
+function persistAndRender(options = {}) {
+  persistLists(options);
   render();
 }
 
-function persistLists() {
+function persistLists(options = {}) {
   lists = ensureTodayList(lists);
   localStorage.setItem(storageKey, JSON.stringify(lists));
-  queueRemoteSync();
+  queueRemoteSync(options);
 }
 
 function persistTomorrowQueue() {
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
-  queueRemoteSync();
+  queueRemoteSync({ syncShared: false });
 }
 
 async function initializeSync() {
@@ -808,9 +813,10 @@ async function refreshRemoteState() {
   await loadRemoteState();
 }
 
-function queueRemoteSync() {
+function queueRemoteSync(options = {}) {
   if (syncApplyingRemoteState || !syncClient || !syncUser) return;
 
+  rememberSyncScope(options);
   window.clearTimeout(syncPushTimer);
   pauseRemoteRefresh(syncDebounceMs + syncLocalWritePauseMs);
   updateSyncUi("Saving...");
@@ -819,12 +825,26 @@ function queueRemoteSync() {
   }, syncDebounceMs);
 }
 
+function rememberSyncScope(options = {}) {
+  if (options.syncShared === false) return;
+
+  if (Array.isArray(options.sharedListIds)) {
+    options.sharedListIds.filter(Boolean).forEach((listId) => {
+      syncPendingSharedListIds.add(listId);
+    });
+    return;
+  }
+
+  syncPendingAllShared = true;
+}
+
 async function pushRemoteState() {
   if (!syncClient || !syncUser) return;
 
   window.clearTimeout(syncPushTimer);
   syncPushTimer = null;
   const updatedAt = new Date().toISOString();
+  const sharedLists = getPendingSharedLists();
 
   const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, updatedAt);
   if (privateError) {
@@ -832,14 +852,29 @@ async function pushRemoteState() {
     return;
   }
 
-  const sharedError = await pushSharedLists(getStandingLists(lists), updatedAt);
+  const sharedError = await pushSharedLists(sharedLists, updatedAt);
   if (sharedError) {
+    clearPendingSharedSync();
     reportSyncError("Shared list sync", sharedError);
     return;
   }
 
+  clearPendingSharedSync();
   syncLastRemoteUpdatedAt = updatedAt;
   updateSyncUi("Synced");
+}
+
+function getPendingSharedLists() {
+  const standingLists = getStandingLists(lists);
+  if (syncPendingAllShared) return standingLists;
+  if (syncPendingSharedListIds.size === 0) return [];
+
+  return standingLists.filter((list) => syncPendingSharedListIds.has(list.id));
+}
+
+function clearPendingSharedSync() {
+  syncPendingAllShared = false;
+  syncPendingSharedListIds.clear();
 }
 
 function subscribeToRemoteChanges() {
@@ -988,9 +1023,10 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
 }
 
 async function pushSharedLists(standingLists = getStandingLists(lists), updatedAt = new Date().toISOString()) {
-  if (standingLists.length === 0) return null;
+  const uniqueStandingLists = uniqueListsById(standingLists);
+  if (uniqueStandingLists.length === 0) return null;
 
-  const managedListRows = standingLists
+  const managedListRows = uniqueStandingLists
     .map((list, index) => ({ list, index }))
     .filter(({ list }) => canManageList(list))
     .map(({ list, index }) => listToRow(list, index, updatedAt));
@@ -1005,7 +1041,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
     if (listResult.error) return listResult.error;
   }
 
-  for (const [index, list] of standingLists.entries()) {
+  for (const [index, list] of uniqueStandingLists.entries()) {
     if (canManageList(list) || !canEditList(list)) continue;
 
     const listResult = await syncClient
@@ -1016,7 +1052,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
     if (listResult.error) return listResult.error;
   }
 
-  for (const list of standingLists) {
+  for (const list of uniqueStandingLists) {
     if (!canEditList(list)) continue;
 
     const taskError = await syncSharedTasks(list, updatedAt);
@@ -1024,6 +1060,15 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   return null;
+}
+
+function uniqueListsById(sourceLists) {
+  const seen = new Set();
+  return sourceLists.filter((list) => {
+    if (!list?.id || seen.has(list.id)) return false;
+    seen.add(list.id);
+    return true;
+  });
 }
 
 async function syncSharedTasks(list, updatedAt) {
@@ -1099,7 +1144,7 @@ async function shareListByEmail(list) {
   }
 
   updateSyncUi("Sharing...");
-  const listError = await pushSharedLists(getStandingLists(lists));
+  const listError = await pushSharedLists([list]);
   if (listError) {
     updateSyncUi("Share error");
     notifyUser(`Could not prepare this list for sharing. ${listError.message}`);
@@ -1797,7 +1842,7 @@ function finishListRename(form) {
 
   editingListId = null;
   openMenu = null;
-  persistAndRender();
+  persistAndRender({ sharedListIds: [list.id] });
 }
 
 function finishTaskRename(form) {
@@ -1814,7 +1859,7 @@ function finishTaskRename(form) {
 
   editingTask = null;
   openMenu = null;
-  persistAndRender();
+  persistAndRender({ sharedListIds: [list.id] });
 }
 
 function askForText(message, currentValue) {
@@ -2291,7 +2336,7 @@ function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
   if (isEditingTask(sourceListId, taskId)) {
     editingTask = null;
   }
-  persistAndRender();
+  persistAndRender({ sharedListIds: [sourceList.id, targetList.id] });
 }
 
 function moveTaskToOpenBottom(list, taskId) {
