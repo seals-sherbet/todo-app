@@ -1053,7 +1053,7 @@ button:focus-visible {
 
 .tomorrow-form {
   display: grid;
-  grid-template-columns: minmax(130px, 150px) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
   align-items: end;
 }
@@ -1073,11 +1073,14 @@ button:focus-visible {
 }
 
 .tomorrow-form .primary-button {
+  width: auto;
+  justify-self: end;
   min-height: 34px;
   border-color: var(--tomorrow-button-bg);
   border-radius: 999px;
   background: var(--tomorrow-button-bg);
   color: var(--tomorrow-button-text);
+  padding: 0 16px;
 }
 
 @media (max-width: 680px) {
