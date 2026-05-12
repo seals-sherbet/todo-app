@@ -11,6 +11,7 @@ const syncDebounceMs = 700;
 const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
+const taskFormPointerGraceMs = 800;
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -49,6 +50,7 @@ let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
 let expandedCompletedLists = new Set();
 let activeTaskFormListId = null;
 const taskFormDrafts = new Map();
+let taskFormPointerActiveUntil = 0;
 let suppressHandleClick = false;
 let todayText = formatTodayDate();
 let rolloverTimer = null;
@@ -97,6 +99,7 @@ taskBoards.forEach((board) => {
   board.addEventListener("input", handleTaskBoardFormInput);
   board.addEventListener("change", handleTaskBoardFormInput);
   board.addEventListener("focusout", handleTaskBoardFocusout);
+  board.addEventListener("pointerdown", handleTaskFormPointerDown);
   board.addEventListener("pointerdown", handleDragPointerDown);
   board.addEventListener("click", handleTaskBoardClick);
 });
@@ -169,6 +172,7 @@ function handleTaskBoardFocusout(event) {
   const listId = taskForm.dataset.listId;
   window.setTimeout(() => {
     if (activeTaskFormListId !== listId) return;
+    if (isTaskFormPointerActive()) return;
 
     const currentForm = findInTaskBoards(`form[data-list-form][data-list-id="${listId}"]`);
     if (currentForm?.contains(document.activeElement)) return;
@@ -183,6 +187,11 @@ function handleTaskBoardFormInput(event) {
   if (!taskForm) return;
 
   rememberTaskFormDraft(taskForm);
+}
+
+function handleTaskFormPointerDown(event) {
+  if (!event.target.closest("form[data-list-form]")) return;
+  taskFormPointerActiveUntil = Date.now() + taskFormPointerGraceMs;
 }
 
 async function handleTaskBoardClick(event) {
@@ -1745,6 +1754,10 @@ function rememberTaskFormDraft(form) {
 
 function clearTaskFormDraft(listId) {
   taskFormDrafts.delete(listId);
+}
+
+function isTaskFormPointerActive() {
+  return Date.now() < taskFormPointerActiveUntil;
 }
 
 function collapseActiveTaskFormFromOutsideClick(event) {
