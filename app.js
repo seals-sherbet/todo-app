@@ -1048,14 +1048,15 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
     .filter(({ list }) => canManageList(list))
     .map(({ list, index }) => listToRow(list, index, updatedAt));
 
-  if (managedListRows.length > 0) {
-    const listResult = await syncClient
-      .from("task_lists")
-      .upsert(managedListRows, {
-        onConflict: "id"
-      });
-
+  for (const row of managedListRows) {
+    const listResult = await upsertOwnedTaskList(row);
     if (listResult.error) return listResult.error;
+
+    const list = uniqueStandingLists.find((item) => item.id === row.id);
+    const ownerId = listResult.data?.[0]?.owner_id;
+    if (list && ownerId) {
+      list.ownerId = ownerId;
+    }
   }
 
   for (const [index, list] of uniqueStandingLists.entries()) {
@@ -1077,6 +1078,20 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   return null;
+}
+
+async function upsertOwnedTaskList(row) {
+  return syncClient.rpc("upsert_task_list", {
+    target_id: row.id,
+    target_name: row.name,
+    target_collapsed: row.collapsed,
+    target_type: row.type,
+    target_show_details: row.show_details,
+    target_created_at: row.created_at,
+    target_position: row.position,
+    target_updated_at: row.updated_at,
+    target_device_id: row.device_id
+  });
 }
 
 function uniqueListsById(sourceLists) {

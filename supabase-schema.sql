@@ -118,6 +118,79 @@ or exists (
     and role in ('editor', 'admin')
 );
 
+create or replace function public.upsert_task_list(
+  target_id text,
+  target_name text,
+  target_collapsed boolean,
+  target_type text,
+  target_show_details boolean,
+  target_created_at timestamptz,
+  target_position integer,
+  target_updated_at timestamptz,
+  target_device_id text
+)
+returns table(id text, owner_id uuid)
+language plpgsql
+security definer
+set search_path = public
+as '
+begin
+  if auth.uid() is null then
+    raise exception ''Not signed in'';
+  end if;
+
+  return query
+  insert into public.task_lists (
+    id,
+    owner_id,
+    name,
+    collapsed,
+    type,
+    show_details,
+    created_at,
+    position,
+    updated_at,
+    device_id
+  )
+  values (
+    target_id,
+    auth.uid(),
+    target_name,
+    target_collapsed,
+    target_type,
+    target_show_details,
+    target_created_at,
+    target_position,
+    target_updated_at,
+    target_device_id
+  )
+  on conflict (id) do update
+  set
+    name = excluded.name,
+    collapsed = excluded.collapsed,
+    type = excluded.type,
+    show_details = excluded.show_details,
+    created_at = excluded.created_at,
+    position = excluded.position,
+    updated_at = excluded.updated_at,
+    device_id = excluded.device_id
+  where public.task_lists.owner_id = auth.uid()
+  returning public.task_lists.id, public.task_lists.owner_id;
+end;
+';
+
+grant execute on function public.upsert_task_list(
+  text,
+  text,
+  boolean,
+  text,
+  boolean,
+  timestamptz,
+  integer,
+  timestamptz,
+  text
+) to authenticated;
+
 drop policy if exists "Task documents are readable by owner" on public.task_documents;
 drop policy if exists "Task documents are insertable by owner" on public.task_documents;
 drop policy if exists "Task documents are updateable by owner" on public.task_documents;
