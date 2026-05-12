@@ -51,7 +51,9 @@ Use the same email address on each device. The first signed-in device uploads th
 
 ## Current sync behavior
 
-- Lists, tasks, completed state, ordering, and tomorrow queue sync as one task document per signed-in user.
+- Today and Tomorrow sync as private data for each signed-in user.
+- Standing lists and their tasks sync as rows that can be shared with other signed-in users.
+- A shared standing list appears for the invited person after they sign in with the invited email address.
 - Changes save locally first, then sync to Supabase.
 - Two devices editing at exactly the same time use last save wins.
-- Shared lists between two different people will need a second database pass after personal device sync is working.
+- Only the list owner can share or delete a shared standing list.

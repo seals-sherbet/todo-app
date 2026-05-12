@@ -8,6 +8,7 @@ const todayListId = "pinned-today";
 const todayListType = "today";
 const completedPreviewLimit = 2;
 const syncDebounceMs = 700;
+const syncRefreshDebounceMs = 500;
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -53,6 +54,7 @@ let syncClient = null;
 let syncUser = null;
 let syncChannel = null;
 let syncPushTimer = null;
+let syncRefreshTimer = null;
 let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
 const syncDeviceId = getOrCreateDeviceId();
@@ -179,7 +181,7 @@ function handleTaskBoardFormInput(event) {
   rememberTaskFormDraft(taskForm);
 }
 
-function handleTaskBoardClick(event) {
+async function handleTaskBoardClick(event) {
   const handle = event.target.closest("[data-menu-type]");
   if (handle && isInsideTaskBoard(handle)) {
     if (suppressHandleClick) {
@@ -241,11 +243,20 @@ function handleTaskBoardClick(event) {
     return;
   }
 
+  if (button.dataset.action === "share-list") {
+    if (isTodayList(list)) return;
+    openMenu = null;
+    render();
+    await shareListByEmail(list);
+    return;
+  }
+
   if (button.dataset.action === "delete-list") {
     if (isTodayList(list)) return;
     const hasTasks = list.tasks.length > 0;
     const shouldDelete = !hasTasks || askToConfirm(`Delete "${list.name}" and its tasks?`);
     if (!shouldDelete) return;
+    const deletedListId = list.id;
     lists = lists.filter((item) => item.id !== list.id);
     expandedCompletedLists.delete(list.id);
     clearTaskFormDraft(list.id);
@@ -254,6 +265,7 @@ function handleTaskBoardClick(event) {
     }
     openMenu = null;
     persistAndRender();
+    await deleteRemoteList(deletedListId);
     return;
   }
 
@@ -486,6 +498,7 @@ async function handleAuthSession(session) {
 
   syncUser = nextUser;
   updateSyncUi("Loading sync...");
+  await syncUserProfile();
   await loadRemoteState();
   subscribeToRemoteChanges();
 }
@@ -534,24 +547,63 @@ async function handleSyncButtonClick() {
 async function loadRemoteState() {
   if (!syncClient || !syncUser) return;
 
-  const { data, error } = await syncClient
-    .from("task_documents")
-    .select("lists,tomorrow_queue,updated_at,device_id")
-    .eq("user_id", syncUser.id)
-    .maybeSingle();
+  await claimPendingListInvites();
 
-  if (error) {
+  const privateResult = await fetchPrivateDocument();
+  if (privateResult.error) {
     updateSyncUi("Setup needed");
-    alert(`Supabase sync could not load. ${error.message}`);
+    alert(`Supabase sync could not load. ${privateResult.error.message}`);
     return;
   }
 
-  if (!data) {
-    await pushRemoteState();
+  let sharedResult = await fetchSharedLists();
+  if (sharedResult.error) {
+    updateSyncUi("Setup needed");
+    alert(`Shared list sync could not load. ${sharedResult.error.message}`);
     return;
   }
 
-  applyRemoteState(data);
+  const privateDocument = privateResult.data;
+  const privateRemoteLists = Array.isArray(privateDocument?.lists)
+    ? privateDocument.lists.map(normalizeList)
+    : null;
+  const privateLists = privateRemoteLists
+    ? ensureTodayList(privateRemoteLists).filter(isTodayList)
+    : getPrivateLists(lists);
+  const documentStandingLists = privateRemoteLists
+    ? privateRemoteLists.filter((list) => !isTodayListCandidate(list))
+    : [];
+  const nextTomorrowQueue = privateDocument
+    ? normalizeTomorrowQueue(privateDocument.tomorrow_queue)
+    : tomorrowQueue;
+
+  if (documentStandingLists.length > 0) {
+    await pushSharedLists(documentStandingLists);
+    await pushPrivateState(privateLists, nextTomorrowQueue);
+    sharedResult = await fetchSharedLists();
+    if (sharedResult.error) {
+      updateSyncUi("Setup needed");
+      alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+      return;
+    }
+  } else if (!privateDocument) {
+    await pushPrivateState(privateLists, nextTomorrowQueue);
+    if (sharedResult.lists.length === 0 && getStandingLists(lists).length > 0) {
+      await pushSharedLists(getStandingLists(lists));
+      sharedResult = await fetchSharedLists();
+      if (sharedResult.error) {
+        updateSyncUi("Setup needed");
+        alert(`Shared list sync could not load. ${sharedResult.error.message}`);
+        return;
+      }
+    }
+  }
+
+  applyRemoteState({
+    lists: [...privateLists, ...sharedResult.lists],
+    tomorrowQueue: nextTomorrowQueue,
+    updatedAt: privateDocument?.updated_at || new Date().toISOString()
+  });
   updateSyncUi("Synced");
 }
 
@@ -577,26 +629,19 @@ async function pushRemoteState() {
   syncPushTimer = null;
   const updatedAt = new Date().toISOString();
 
-  const { data, error } = await syncClient
-    .from("task_documents")
-    .upsert({
-      user_id: syncUser.id,
-      lists: ensureTodayList(lists),
-      tomorrow_queue: tomorrowQueue,
-      updated_at: updatedAt,
-      device_id: syncDeviceId
-    }, {
-      onConflict: "user_id"
-    })
-    .select("updated_at")
-    .single();
-
-  if (error) {
+  const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, updatedAt);
+  if (privateError) {
     updateSyncUi("Sync error");
     return;
   }
 
-  syncLastRemoteUpdatedAt = data?.updated_at || updatedAt;
+  const sharedError = await pushSharedLists(getStandingLists(lists), updatedAt);
+  if (sharedError) {
+    updateSyncUi("Sync error");
+    return;
+  }
+
+  syncLastRemoteUpdatedAt = updatedAt;
   updateSyncUi("Synced");
 }
 
@@ -605,23 +650,39 @@ function subscribeToRemoteChanges() {
 
   clearRemoteSubscription();
   syncChannel = syncClient
-    .channel(`task-document-${syncUser.id}`)
+    .channel(`tasks-sync-${syncUser.id}`)
     .on("postgres_changes", {
       event: "*",
       schema: "public",
       table: "task_documents",
       filter: `user_id=eq.${syncUser.id}`
-    }, (payload) => {
-      const nextState = payload.new;
-      if (!nextState || nextState.device_id === syncDeviceId) return;
-      if (syncLastRemoteUpdatedAt && nextState.updated_at <= syncLastRemoteUpdatedAt) return;
-      applyRemoteState(nextState);
-      updateSyncUi("Updated");
-    })
+    }, scheduleRemoteRefresh)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "task_lists"
+    }, scheduleRemoteRefresh)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "tasks"
+    }, scheduleRemoteRefresh)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "list_members"
+    }, scheduleRemoteRefresh)
+    .on("postgres_changes", {
+      event: "*",
+      schema: "public",
+      table: "list_invites"
+    }, scheduleRemoteRefresh)
     .subscribe();
 }
 
 function clearRemoteSubscription() {
+  window.clearTimeout(syncRefreshTimer);
+  syncRefreshTimer = null;
   if (!syncClient || !syncChannel) return;
 
   syncClient.removeChannel(syncChannel);
@@ -633,10 +694,8 @@ function applyRemoteState(remoteState) {
   lists = Array.isArray(remoteState.lists)
     ? ensureTodayList(remoteState.lists.map(normalizeList))
     : ensureTodayList([createList("Personal")]);
-  tomorrowQueue = Array.isArray(remoteState.tomorrow_queue)
-    ? remoteState.tomorrow_queue.map(normalizeTomorrowQueueItem).filter(Boolean)
-    : [];
-  syncLastRemoteUpdatedAt = remoteState.updated_at || "";
+  tomorrowQueue = normalizeTomorrowQueue(remoteState.tomorrowQueue);
+  syncLastRemoteUpdatedAt = remoteState.updatedAt || "";
 
   localStorage.setItem(storageKey, JSON.stringify(lists));
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
@@ -644,6 +703,233 @@ function applyRemoteState(remoteState) {
 
   rollTomorrowQueueIntoToday();
   render();
+}
+
+async function fetchPrivateDocument() {
+  return syncClient
+    .from("task_documents")
+    .select("lists,tomorrow_queue,updated_at,device_id")
+    .eq("user_id", syncUser.id)
+    .maybeSingle();
+}
+
+async function fetchSharedLists() {
+  const listResult = await syncClient
+    .from("task_lists")
+    .select("id,name,collapsed,type,show_details,created_at,position,owner_id,updated_at")
+    .order("position", { ascending: true })
+    .order("created_at", { ascending: true });
+
+  if (listResult.error) {
+    return { lists: [], error: listResult.error };
+  }
+
+  const listRows = listResult.data || [];
+  const listIds = listRows.map((list) => list.id);
+  let taskRows = [];
+
+  if (listIds.length > 0) {
+    const taskResult = await syncClient
+      .from("tasks")
+      .select("id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at")
+      .in("list_id", listIds)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true });
+
+    if (taskResult.error) {
+      return { lists: [], error: taskResult.error };
+    }
+
+    taskRows = taskResult.data || [];
+  }
+
+  const tasksByList = taskRows.reduce((groups, row) => {
+    groups[row.list_id] ||= [];
+    groups[row.list_id].push(rowToTask(row));
+    return groups;
+  }, {});
+
+  return {
+    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [])),
+    error: null
+  };
+}
+
+async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, updatedAt = new Date().toISOString()) {
+  const { error } = await syncClient
+    .from("task_documents")
+    .upsert({
+      user_id: syncUser.id,
+      lists: privateLists,
+      tomorrow_queue: queue,
+      updated_at: updatedAt,
+      device_id: syncDeviceId
+    }, {
+      onConflict: "user_id"
+    });
+
+  return error;
+}
+
+async function pushSharedLists(standingLists = getStandingLists(lists), updatedAt = new Date().toISOString()) {
+  if (standingLists.length === 0) return null;
+
+  const listRows = standingLists.map((list, index) => listToRow(list, index, updatedAt));
+  const listResult = await syncClient
+    .from("task_lists")
+    .upsert(listRows, {
+      onConflict: "id"
+    });
+
+  if (listResult.error) return listResult.error;
+
+  for (const list of standingLists) {
+    const deleteResult = await syncClient
+      .from("tasks")
+      .delete()
+      .eq("list_id", list.id);
+
+    if (deleteResult.error) return deleteResult.error;
+
+    const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
+    if (taskRows.length === 0) continue;
+
+    const taskResult = await syncClient
+      .from("tasks")
+      .insert(taskRows);
+
+    if (taskResult.error) return taskResult.error;
+  }
+
+  return null;
+}
+
+async function deleteRemoteList(listId) {
+  if (!syncClient || !syncUser || !listId) return;
+
+  const { error } = await syncClient
+    .from("task_lists")
+    .delete()
+    .eq("id", listId);
+
+  if (error) {
+    updateSyncUi("Sync error");
+    alert(`Could not delete the shared list remotely. ${error.message}`);
+    return;
+  }
+
+  updateSyncUi("Synced");
+}
+
+async function shareListByEmail(list) {
+  if (!syncClient || !syncUser) {
+    alert("Sign in before sharing a list.");
+    return;
+  }
+
+  if (!canManageList(list)) {
+    alert("Only the list owner can share this list.");
+    return;
+  }
+
+  const email = normalizeEmail(askForText(`Share "${list.name}" with email`, ""));
+  if (!email) return;
+
+  if (!isValidEmail(email)) {
+    alert("Enter a valid email address.");
+    return;
+  }
+
+  updateSyncUi("Sharing...");
+  const listError = await pushSharedLists(getStandingLists(lists));
+  if (listError) {
+    updateSyncUi("Share error");
+    alert(`Could not prepare this list for sharing. ${listError.message}`);
+    return;
+  }
+
+  const { error } = await syncClient
+    .from("list_invites")
+    .upsert({
+      list_id: list.id,
+      email,
+      role: "editor",
+      invited_by: syncUser.id,
+      accepted_at: null
+    }, {
+      onConflict: "list_id,email"
+    });
+
+  if (error) {
+    updateSyncUi("Share error");
+    alert(`Could not share this list. ${error.message}`);
+    return;
+  }
+
+  updateSyncUi("Synced");
+  alert(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
+}
+
+async function syncUserProfile() {
+  const email = normalizeEmail(syncUser.email || "");
+  if (!email) return;
+
+  const { error } = await syncClient
+    .from("profiles")
+    .upsert({
+      id: syncUser.id,
+      email
+    }, {
+      onConflict: "id"
+    });
+
+  if (error) {
+    updateSyncUi("Setup needed");
+    alert(`Supabase profile setup could not load. ${error.message}`);
+  }
+}
+
+async function claimPendingListInvites() {
+  const email = normalizeEmail(syncUser?.email || "");
+  if (!email) return;
+
+  const { data, error } = await syncClient
+    .from("list_invites")
+    .select("list_id,role")
+    .eq("email", email)
+    .is("accepted_at", null);
+
+  if (error || !Array.isArray(data) || data.length === 0) return;
+
+  for (const invite of data) {
+    const memberResult = await syncClient
+      .from("list_members")
+      .upsert({
+        list_id: invite.list_id,
+        user_id: syncUser.id,
+        role: invite.role || "editor"
+      }, {
+        onConflict: "list_id,user_id"
+      });
+
+    if (memberResult.error) continue;
+
+    await syncClient
+      .from("list_invites")
+      .update({ accepted_at: new Date().toISOString() })
+      .eq("list_id", invite.list_id)
+      .eq("email", email);
+  }
+}
+
+function scheduleRemoteRefresh(payload) {
+  const source = payload.new || payload.old || {};
+  if (syncApplyingRemoteState || source.device_id === syncDeviceId) return;
+
+  window.clearTimeout(syncRefreshTimer);
+  syncRefreshTimer = window.setTimeout(() => {
+    loadRemoteState();
+  }, syncRefreshDebounceMs);
 }
 
 function updateSyncUi(message = "") {
@@ -1110,10 +1396,13 @@ function createListMenu(list) {
 
   menu.append(createMenuButton("Details", "toggle-fields", list.showDetails ? `Hide details for ${list.name}` : `Show details for ${list.name}`, list.showDetails));
   if (!isTodayList(list)) {
-    menu.append(
-      createMenuButton("Edit", "edit-list", `Edit ${list.name}`),
-      createMenuButton("Delete", "delete-list", `Delete ${list.name}`, false, true)
-    );
+    if (canShareList(list)) {
+      menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
+    }
+    menu.append(createMenuButton("Edit", "edit-list", `Edit ${list.name}`));
+    if (canManageList(list)) {
+      menu.append(createMenuButton("Delete", "delete-list", `Delete ${list.name}`, false, true));
+    }
   }
 
   return menu;
@@ -1250,7 +1539,9 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     tasks,
     createdAt: options.createdAt || new Date().toISOString(),
     type: options.type || "standard",
-    showDetails: Boolean(options.showDetails)
+    showDetails: Boolean(options.showDetails),
+    ownerId: options.ownerId || "",
+    shared: Boolean(options.shared)
   };
 }
 
@@ -1262,12 +1553,67 @@ function normalizeList(list) {
     tasks: Array.isArray(list.tasks) ? list.tasks.map(normalizeTask) : [],
     createdAt: list.createdAt || new Date().toISOString(),
     type: list.type || "standard",
-    showDetails: Boolean(list.showDetails)
+    showDetails: Boolean(list.showDetails),
+    ownerId: list.ownerId || list.owner_id || "",
+    shared: Boolean(list.shared)
   };
 }
 
 function normalizeTask(task) {
   return createTask(task.title || "Untitled task", task);
+}
+
+function listToRow(list, position, updatedAt) {
+  return {
+    id: list.id,
+    owner_id: list.ownerId || syncUser.id,
+    name: list.name,
+    collapsed: Boolean(list.collapsed),
+    type: list.type || "standard",
+    show_details: Boolean(list.showDetails),
+    created_at: list.createdAt || updatedAt,
+    position,
+    updated_at: updatedAt,
+    device_id: syncDeviceId
+  };
+}
+
+function taskToRow(task, listId, position, updatedAt) {
+  return {
+    id: task.id,
+    list_id: listId,
+    title: task.title,
+    due: task.due || null,
+    priority: task.priority || "normal",
+    completed: Boolean(task.completed),
+    completed_at: task.completedAt || null,
+    created_at: task.createdAt || updatedAt,
+    position,
+    updated_at: updatedAt,
+    device_id: syncDeviceId
+  };
+}
+
+function rowToList(row, tasks) {
+  return createList(row.name || "Untitled", Boolean(row.collapsed), tasks, {
+    id: row.id,
+    createdAt: row.created_at,
+    type: row.type || "standard",
+    showDetails: row.show_details,
+    ownerId: row.owner_id,
+    shared: row.owner_id !== syncUser?.id
+  });
+}
+
+function rowToTask(row) {
+  return createTask(row.title || "Untitled task", {
+    id: row.id,
+    due: row.due || "",
+    priority: row.priority || "normal",
+    completed: row.completed,
+    completedAt: row.completed_at || "",
+    createdAt: row.created_at
+  });
 }
 
 function createTomorrowQueueItem(title, options = {}) {
@@ -1295,8 +1641,36 @@ function normalizeTomorrowQueueItem(item) {
   });
 }
 
+function normalizeTomorrowQueue(queue) {
+  return Array.isArray(queue) ? queue.map(normalizeTomorrowQueueItem).filter(Boolean) : [];
+}
+
 function findList(id) {
   return lists.find((list) => list.id === id);
+}
+
+function getPrivateLists(sourceLists = lists) {
+  return ensureTodayList(sourceLists).filter(isTodayList);
+}
+
+function getStandingLists(sourceLists = lists) {
+  return ensureTodayList(sourceLists).filter((list) => !isTodayList(list));
+}
+
+function canManageList(list) {
+  return !list.ownerId || list.ownerId === syncUser?.id;
+}
+
+function canShareList(list) {
+  return !isTodayList(list) && canManageList(list);
+}
+
+function normalizeEmail(email) {
+  return String(email || "").trim().toLowerCase();
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 }
 
 function getTaskFormDraft(listId) {
