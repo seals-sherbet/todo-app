@@ -15,7 +15,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.87";
+const appVersion = "v0.88";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -1179,6 +1179,8 @@ async function fetchSharedLists() {
   const listIds = listRows.map((list) => list.id);
   let taskRows = [];
   let memberRows = [];
+  let sharedMarkerRows = [];
+  let inviteRows = [];
 
   if (listIds.length > 0) {
     const taskResult = await syncClient
@@ -1205,6 +1207,24 @@ async function fetchSharedLists() {
     }
 
     memberRows = memberResult.data || [];
+
+    const sharedMarkerResult = await syncClient
+      .from("list_members")
+      .select("list_id")
+      .in("list_id", listIds);
+
+    if (!sharedMarkerResult.error) {
+      sharedMarkerRows = sharedMarkerResult.data || [];
+    }
+
+    const inviteResult = await syncClient
+      .from("list_invites")
+      .select("list_id")
+      .in("list_id", listIds);
+
+    if (!inviteResult.error) {
+      inviteRows = inviteResult.data || [];
+    }
   }
 
   const tasksByList = taskRows.reduce((groups, row) => {
@@ -1216,9 +1236,13 @@ async function fetchSharedLists() {
     roles[row.list_id] = row.role || "";
     return roles;
   }, {});
+  const sharedListIds = new Set([
+    ...sharedMarkerRows.map((row) => row.list_id),
+    ...inviteRows.map((row) => row.list_id)
+  ]);
 
   return {
-    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [], roleByList[row.id] || "")),
+    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [], roleByList[row.id] || "", sharedListIds.has(row.id))),
     error: null
   };
 }
@@ -1409,6 +1433,8 @@ async function shareListByEmail(list) {
     return;
   }
 
+  list.shared = true;
+  persistAndRender({ sharedListIds: [list.id] });
   updateSyncUi("Synced");
   notifyUser(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
 }
@@ -2473,14 +2499,14 @@ function taskToRow(task, listId, position, updatedAt) {
   };
 }
 
-function rowToList(row, tasks, memberRole = "") {
+function rowToList(row, tasks, memberRole = "", shared = false) {
   return createList(row.name || "Untitled", Boolean(row.collapsed), tasks, {
     id: row.id,
     createdAt: row.created_at,
     type: row.type || "standard",
     showDetails: row.show_details,
     ownerId: row.owner_id,
-    shared: row.owner_id !== syncUser?.id,
+    shared: shared || row.owner_id !== syncUser?.id,
     memberRole
   });
 }
