@@ -88,7 +88,7 @@ button {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 10px;
   padding: 6px 0 8px;
 }
@@ -133,10 +133,10 @@ h1 {
   letter-spacing: 0;
 }
 
-.icon-button,
 .primary-button,
 .task-action,
 .filter-menu-button,
+.settings-menu-button,
 .sync-button,
 .sync-error-button {
   min-height: 26px;
@@ -144,11 +144,6 @@ h1 {
   border-radius: 6px;
   background: var(--panel-strong);
   color: var(--text);
-}
-
-.icon-button {
-  min-width: 48px;
-  padding: 0 8px;
 }
 
 .sync-button {
@@ -346,11 +341,13 @@ button:focus-visible {
   padding: 0;
 }
 
-.filter-menu-shell {
+.filter-menu-shell,
+.settings-menu-shell {
   position: relative;
 }
 
-.filter-menu-button {
+.filter-menu-button,
+.settings-menu-button {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -359,7 +356,8 @@ button:focus-visible {
   font-weight: 500;
 }
 
-.filter-menu-button::after {
+.filter-menu-button::after,
+.settings-menu-button::after {
   content: "";
   width: 0;
   height: 0;
@@ -374,7 +372,8 @@ button:focus-visible {
   font-weight: inherit;
 }
 
-.filter-menu {
+.filter-menu,
+.settings-menu {
   position: absolute;
   top: calc(100% + 5px);
   right: 0;
@@ -387,6 +386,27 @@ button:focus-visible {
   background: var(--panel-strong);
   box-shadow: 0 8px 18px rgba(37, 32, 25, 0.16);
   padding: 4px;
+}
+
+.settings-menu {
+  min-width: 142px;
+}
+
+.settings-menu-item {
+  font-weight: 400;
+}
+
+.settings-version {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-top: 3px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  padding: 7px 7px 3px;
+  font-size: 0.68rem;
+  font-weight: 400;
 }
 
 .list-section {
@@ -1110,7 +1130,7 @@ button:focus-visible {
   }
 
   .topbar {
-    align-items: flex-start;
+    align-items: center;
   }
 
   .topbar-actions {

@@ -16,19 +16,24 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow" id="todayLabel"></p>
-          <h1>Tasks</h1>
-        </div>
         <div class="topbar-actions">
           <div class="sync-control" aria-live="polite">
             <span class="sync-status" id="syncStatus">Local</span>
             <button class="sync-button" id="syncButton" type="button">Sync</button>
             <button class="sync-error-button" id="syncErrorButton" type="button" hidden>Details</button>
           </div>
-          <button class="icon-button" id="themeToggle" type="button" aria-label="Toggle theme" title="Toggle theme">
-            <span aria-hidden="true">Theme</span>
-          </button>
+          <div class="settings-menu-shell">
+            <button class="settings-menu-button" id="settingsMenuButton" type="button" aria-haspopup="menu" aria-controls="settingsMenu" aria-expanded="false">
+              Menu
+            </button>
+            <div class="settings-menu" id="settingsMenu" role="menu" aria-label="App menu" hidden>
+              <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
+              <div class="settings-version" role="presentation">
+                <span>Version</span>
+                <span id="appVersion"></span>
+              </div>
+            </div>
+          </div>
         </div>
       </header>
 

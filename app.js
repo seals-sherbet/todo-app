@@ -12,12 +12,16 @@ const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
+const appVersion = "v0.79";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
 const todayBoard = document.querySelector("#todayBoard");
 const listBoard = document.querySelector("#listBoard");
 const emptyState = document.querySelector("#emptyState");
+const settingsMenuButton = document.querySelector("#settingsMenuButton");
+const settingsMenu = document.querySelector("#settingsMenu");
+const appVersionLabel = document.querySelector("#appVersion");
 const themeToggle = document.querySelector("#themeToggle");
 const syncButton = document.querySelector("#syncButton");
 const syncStatus = document.querySelector("#syncStatus");
@@ -56,6 +60,7 @@ let filter = "all";
 let dragState = null;
 let openMenu = null;
 let filterMenuOpen = false;
+let settingsMenuOpen = false;
 let editingListId = null;
 let editingTask = null;
 let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
@@ -82,7 +87,8 @@ let pendingOtpEmail = "";
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
-todayLabel.textContent = todayText;
+if (todayLabel) todayLabel.textContent = todayText;
+if (appVersionLabel) appVersionLabel.textContent = appVersion;
 rollTomorrowQueueIntoToday();
 scheduleNextRollover();
 
@@ -384,10 +390,16 @@ async function handleTaskBoardClick(event) {
 
 document.addEventListener("click", (event) => {
   const insideFilterMenu = event.target.closest(".filter-menu-shell");
+  const insideSettingsMenu = event.target.closest(".settings-menu-shell");
 
   if (filterMenuOpen && !insideFilterMenu) {
     filterMenuOpen = false;
     renderFilterMenu();
+  }
+
+  if (settingsMenuOpen && !insideSettingsMenu) {
+    settingsMenuOpen = false;
+    renderSettingsMenu();
   }
 
   collapseActiveTaskFormFromOutsideClick(event);
@@ -401,6 +413,7 @@ document.addEventListener("click", (event) => {
 
 filterMenuButton.addEventListener("click", () => {
   filterMenuOpen = !filterMenuOpen;
+  settingsMenuOpen = false;
   if (openMenu) {
     openMenu = null;
     render();
@@ -408,6 +421,7 @@ filterMenuButton.addEventListener("click", () => {
   }
 
   renderFilterMenu();
+  renderSettingsMenu();
 });
 
 filterMenu.addEventListener("click", (event) => {
@@ -416,8 +430,22 @@ filterMenu.addEventListener("click", (event) => {
 
   filter = button.dataset.filter;
   filterMenuOpen = false;
+  settingsMenuOpen = false;
   openMenu = null;
   render();
+});
+
+settingsMenuButton.addEventListener("click", () => {
+  settingsMenuOpen = !settingsMenuOpen;
+  filterMenuOpen = false;
+  if (openMenu) {
+    openMenu = null;
+    render();
+    return;
+  }
+
+  renderFilterMenu();
+  renderSettingsMenu();
 });
 
 tomorrowToggle.addEventListener("click", () => {
@@ -472,6 +500,11 @@ document.addEventListener("keydown", (event) => {
     renderFilterMenu();
   }
 
+  if (settingsMenuOpen) {
+    settingsMenuOpen = false;
+    renderSettingsMenu();
+  }
+
   if (openMenu) {
     openMenu = null;
     render();
@@ -486,6 +519,8 @@ themeToggle.addEventListener("click", () => {
   } else {
     localStorage.removeItem(themeKey);
   }
+  settingsMenuOpen = false;
+  renderSettingsMenu();
 });
 
 syncButton.addEventListener("click", handleSyncButtonClick);
@@ -1376,6 +1411,7 @@ function render() {
   const visibleLists = lists.filter((list) => !isTodayList(list) && shouldShowList(list));
 
   renderFilterMenu();
+  renderSettingsMenu();
   renderTomorrowQueue();
   emptyState.hidden = visibleLists.length > 0;
 
@@ -1393,6 +1429,18 @@ function renderFilterMenu() {
     button.classList.toggle("is-active", isActive);
     button.setAttribute("aria-checked", String(isActive));
   });
+}
+
+function renderSettingsMenu() {
+  settingsMenuButton.setAttribute("aria-expanded", String(settingsMenuOpen));
+  settingsMenu.hidden = !settingsMenuOpen;
+
+  const isDark = document.documentElement.dataset.theme === "dark";
+  themeToggle.textContent = isDark ? "Light Mode" : "Dark Mode";
+  themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
+  themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+
+  if (appVersionLabel) appVersionLabel.textContent = appVersion;
 }
 
 function renderTomorrowQueue(options = {}) {
@@ -2554,7 +2602,7 @@ function refreshTodayText() {
   const nextTodayText = formatTodayDate();
   const changed = nextTodayText !== todayText;
   todayText = nextTodayText;
-  todayLabel.textContent = todayText;
+  if (todayLabel) todayLabel.textContent = todayText;
   return changed;
 }
 
