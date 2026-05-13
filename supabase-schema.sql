@@ -203,6 +203,54 @@ grant execute on function public.upsert_task_list(
   text
 ) to authenticated;
 
+drop function if exists public.claim_pending_list_invites();
+
+create or replace function public.claim_pending_list_invites()
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as '
+declare
+  invitee_email text := lower(auth.jwt() ->> ''email'');
+  claimed_count integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception ''Not signed in'';
+  end if;
+
+  if invitee_email is null or invitee_email = '''' then
+    raise exception ''No email on auth token'';
+  end if;
+
+  insert into public.list_members (
+    list_id,
+    user_id,
+    role
+  )
+  select
+    list_id,
+    auth.uid(),
+    coalesce(role, ''editor'')
+  from public.list_invites
+  where email = invitee_email
+    and accepted_at is null
+  on conflict (list_id, user_id) do update
+  set role = excluded.role
+  where public.list_members.user_id = auth.uid();
+
+  update public.list_invites
+  set accepted_at = now()
+  where email = invitee_email
+    and accepted_at is null;
+
+  get diagnostics claimed_count = row_count;
+  return claimed_count;
+end;
+';
+
+grant execute on function public.claim_pending_list_invites() to authenticated;
+
 drop policy if exists "Task documents are readable by owner" on public.task_documents;
 drop policy if exists "Task documents are insertable by owner" on public.task_documents;
 drop policy if exists "Task documents are updateable by owner" on public.task_documents;

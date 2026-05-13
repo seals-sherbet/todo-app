@@ -15,7 +15,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.86";
+const appVersion = "v0.87";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -920,7 +920,12 @@ async function handleSyncCodeSubmit(event) {
 async function loadRemoteState() {
   if (!syncClient || !syncUser) return;
 
-  await claimPendingListInvites();
+  const inviteResult = await claimPendingListInvites();
+  if (inviteResult?.error) {
+    updateSyncUi("Setup needed");
+    notifyUser(`Shared invite sync could not load. ${inviteResult.error.message}`);
+    return;
+  }
 
   const privateResult = await fetchPrivateDocument();
   if (privateResult.error) {
@@ -1429,35 +1434,13 @@ async function syncUserProfile() {
 
 async function claimPendingListInvites() {
   const email = normalizeEmail(syncUser?.email || "");
-  if (!email) return;
+  if (!email) return { claimed: 0, error: null };
 
-  const { data, error } = await syncClient
-    .from("list_invites")
-    .select("list_id,role")
-    .eq("email", email)
-    .is("accepted_at", null);
-
-  if (error || !Array.isArray(data) || data.length === 0) return;
-
-  for (const invite of data) {
-    const memberResult = await syncClient
-      .from("list_members")
-      .upsert({
-        list_id: invite.list_id,
-        user_id: syncUser.id,
-        role: invite.role || "editor"
-      }, {
-        onConflict: "list_id,user_id"
-      });
-
-    if (memberResult.error) continue;
-
-    await syncClient
-      .from("list_invites")
-      .update({ accepted_at: new Date().toISOString() })
-      .eq("list_id", invite.list_id)
-      .eq("email", email);
-  }
+  const { data, error } = await syncClient.rpc("claim_pending_list_invites");
+  return {
+    claimed: Number(data) || 0,
+    error
+  };
 }
 
 function scheduleRemoteRefresh(payload) {
