@@ -15,7 +15,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.85";
+const appVersion = "v0.86";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -31,6 +31,7 @@ const viewArchiveButton = document.querySelector("#viewArchiveButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
 const downloadArchiveButton = document.querySelector("#downloadArchiveButton");
 const syncButton = document.querySelector("#syncButton");
+const refreshSyncButton = document.querySelector("#refreshSyncButton");
 const syncStatus = document.querySelector("#syncStatus");
 const syncErrorButton = document.querySelector("#syncErrorButton");
 const syncAuthDialog = document.querySelector("#syncAuthDialog");
@@ -636,6 +637,12 @@ downloadArchiveButton.addEventListener("click", () => {
   downloadArchiveText();
 });
 
+refreshSyncButton.addEventListener("click", async () => {
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+  await refreshSyncNow();
+});
+
 archiveClose.addEventListener("click", closeArchiveDialog);
 archiveDialog.addEventListener("click", (event) => {
   if (event.target === archiveDialog) {
@@ -980,6 +987,26 @@ async function loadRemoteState() {
 async function refreshRemoteState() {
   if (!syncClient || !syncUser || document.hidden) return;
   if (shouldSkipRemoteRefresh()) return;
+  await loadRemoteState();
+}
+
+async function refreshSyncNow() {
+  if (!isSupabaseConfigured()) {
+    notifyUser("Add Supabase settings before refreshing sync.");
+    return;
+  }
+
+  if (!syncClient) {
+    notifyUser("Sync is configured, but Supabase did not load. Check your connection and refresh the app.");
+    return;
+  }
+
+  if (!syncUser) {
+    openSyncAuthDialog();
+    return;
+  }
+
+  updateSyncUi("Checking sync...");
   await loadRemoteState();
 }
 
@@ -1607,6 +1634,7 @@ function renderSettingsMenu() {
   themeToggle.textContent = isDark ? "Light Mode" : "Dark Mode";
   themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+  refreshSyncButton.disabled = !isSupabaseConfigured() || !syncClient || !syncUser;
   const hasArchive = Boolean(getCompletedArchiveExportText().trim());
   viewArchiveButton.disabled = !hasArchive;
   copyArchiveButton.disabled = !hasArchive;
