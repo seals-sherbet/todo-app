@@ -909,6 +909,18 @@ button:focus-visible {
   color: var(--danger);
 }
 
+.menu-link:disabled {
+  color: var(--muted);
+  cursor: default;
+  opacity: 0.6;
+}
+
+.menu-link:disabled:hover,
+.menu-link:disabled:focus-visible {
+  background: transparent;
+  color: var(--muted);
+}
+
 .inline-empty {
   margin: 0;
   border-top: 0;

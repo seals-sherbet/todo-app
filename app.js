@@ -4,6 +4,8 @@ const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
+const completedArchiveKey = "tasks.completedArchive.v1";
+const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const todayListId = "pinned-today";
 const todayListType = "today";
 const completedPreviewLimit = 2;
@@ -12,7 +14,7 @@ const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
-const appVersion = "v0.79";
+const appVersion = "v0.80";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -23,6 +25,8 @@ const settingsMenuButton = document.querySelector("#settingsMenuButton");
 const settingsMenu = document.querySelector("#settingsMenu");
 const appVersionLabel = document.querySelector("#appVersion");
 const themeToggle = document.querySelector("#themeToggle");
+const copyArchiveButton = document.querySelector("#copyArchiveButton");
+const downloadArchiveButton = document.querySelector("#downloadArchiveButton");
 const syncButton = document.querySelector("#syncButton");
 const syncStatus = document.querySelector("#syncStatus");
 const syncErrorButton = document.querySelector("#syncErrorButton");
@@ -54,7 +58,12 @@ const filterLabels = {
   completed: "Done"
 };
 
+let completedArchiveText = loadCompletedArchiveText();
+let lastTodayDateKey = localStorage.getItem(todayDateKeyStorageKey) || getDateKey();
 let lists = loadLists();
+hydrateArchiveStateFromLists(lists);
+lists = applyArchiveMetadataToLists(lists);
+persistArchiveState();
 let tomorrowQueue = loadTomorrowQueue();
 let filter = "all";
 let dragState = null;
@@ -523,6 +532,46 @@ themeToggle.addEventListener("click", () => {
   renderSettingsMenu();
 });
 
+copyArchiveButton.addEventListener("click", async () => {
+  const archive = getCompletedArchiveExportText();
+  if (!archive.trim()) {
+    notifyUser("No completed tasks have been archived yet.");
+    return;
+  }
+
+  let copied = false;
+  try {
+    await navigator.clipboard?.writeText(archive);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+  notifyUser(copied ? "Completed archive copied." : archive);
+});
+
+downloadArchiveButton.addEventListener("click", () => {
+  const archive = getCompletedArchiveExportText();
+  if (!archive.trim()) {
+    notifyUser("No completed tasks have been archived yet.");
+    return;
+  }
+
+  const url = URL.createObjectURL(new Blob([archive], { type: "text/plain" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `completed-tasks-archive-${getDateKey()}.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+});
+
 syncButton.addEventListener("click", handleSyncButtonClick);
 syncErrorButton.addEventListener("click", handleSyncErrorButtonClick);
 syncEmailForm.addEventListener("submit", handleSyncEmailSubmit);
@@ -562,8 +611,9 @@ function persistAndRender(options = {}) {
 }
 
 function persistLists(options = {}) {
-  lists = ensureTodayList(lists);
+  lists = applyArchiveMetadataToLists(ensureTodayList(lists));
   localStorage.setItem(storageKey, JSON.stringify(lists));
+  persistArchiveState();
   queueRemoteSync(options);
 }
 
@@ -978,11 +1028,14 @@ function applyRemoteState(remoteState) {
   lists = Array.isArray(remoteState.lists)
     ? ensureTodayList(remoteState.lists.map(normalizeList))
     : ensureTodayList([createList("Personal")]);
+  hydrateArchiveStateFromLists(lists);
+  lists = applyArchiveMetadataToLists(lists);
   tomorrowQueue = normalizeTomorrowQueue(remoteState.tomorrowQueue);
   syncLastRemoteUpdatedAt = remoteState.updatedAt || "";
 
   localStorage.setItem(storageKey, JSON.stringify(lists));
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  persistArchiveState();
   syncApplyingRemoteState = false;
 
   rollTomorrowQueueIntoToday();
@@ -1405,6 +1458,10 @@ function loadTomorrowQueue() {
   return [];
 }
 
+function loadCompletedArchiveText() {
+  return localStorage.getItem(completedArchiveKey) || "";
+}
+
 function render() {
   refreshTodayText();
   const todayList = lists.find(isTodayList);
@@ -1439,6 +1496,9 @@ function renderSettingsMenu() {
   themeToggle.textContent = isDark ? "Light Mode" : "Dark Mode";
   themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+  const hasArchive = Boolean(getCompletedArchiveExportText().trim());
+  copyArchiveButton.disabled = !hasArchive;
+  downloadArchiveButton.disabled = !hasArchive;
 
   if (appVersionLabel) appVersionLabel.textContent = appVersion;
 }
@@ -2066,7 +2126,9 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     showDetails: Boolean(options.showDetails),
     ownerId: options.ownerId || "",
     shared: Boolean(options.shared),
-    memberRole: options.memberRole || ""
+    memberRole: options.memberRole || "",
+    completedArchiveText: typeof options.completedArchiveText === "string" ? options.completedArchiveText : "",
+    lastTodayDateKey: options.lastTodayDateKey || ""
   };
 }
 
@@ -2081,7 +2143,9 @@ function normalizeList(list) {
     showDetails: Boolean(list.showDetails),
     ownerId: list.ownerId || list.owner_id || "",
     shared: Boolean(list.shared),
-    memberRole: list.memberRole || list.member_role || ""
+    memberRole: list.memberRole || list.member_role || "",
+    completedArchiveText: typeof list.completedArchiveText === "string" ? list.completedArchiveText : "",
+    lastTodayDateKey: list.lastTodayDateKey || ""
   };
 }
 
@@ -2194,7 +2258,11 @@ function getActiveUserId() {
 }
 
 function getPrivateLists(sourceLists = lists) {
-  return ensureTodayList(sourceLists).filter(isTodayList);
+  return ensureTodayList(sourceLists).filter(isTodayList).map((list) => ({
+    ...list,
+    completedArchiveText,
+    lastTodayDateKey
+  }));
 }
 
 function getStandingLists(sourceLists = lists) {
@@ -2528,9 +2596,21 @@ function rollTomorrowQueueIntoToday(options = {}) {
   const dateChanged = refreshTodayText();
 
   const todayKey = getDateKey();
+  const dayChanged = lastTodayDateKey !== todayKey;
+  if (dayChanged) {
+    lists = ensureTodayList(lists);
+    archiveCompletedTodayTasks(lastTodayDateKey);
+    lastTodayDateKey = todayKey;
+    lists = applyArchiveMetadataToLists(lists);
+    persistArchiveState();
+  }
+
   const dueItems = tomorrowQueue.filter((item) => item.targetDate <= todayKey);
   if (dueItems.length === 0) {
-    if (options.renderAfter && dateChanged) render();
+    if (dayChanged) {
+      persistLists({ syncShared: false });
+    }
+    if (options.renderAfter && (dateChanged || dayChanged)) render();
     return;
   }
 
@@ -2543,7 +2623,7 @@ function rollTomorrowQueueIntoToday(options = {}) {
   });
   todayList.collapsed = false;
   tomorrowQueue = tomorrowQueue.filter((item) => item.targetDate > todayKey);
-  persistLists();
+  persistLists({ syncShared: false });
   persistTomorrowQueue();
 
   if (options.renderAfter) {
@@ -2577,6 +2657,10 @@ function ensureTodayList(rawLists) {
       todayList.collapsed = Boolean(list.collapsed);
       todayList.createdAt = list.createdAt || todayList.createdAt;
       todayList.showDetails = Boolean(list.showDetails);
+      todayList.completedArchiveText = typeof list.completedArchiveText === "string"
+        ? list.completedArchiveText
+        : todayList.completedArchiveText;
+      todayList.lastTodayDateKey = list.lastTodayDateKey || todayList.lastTodayDateKey;
       todayList.tasks.push(...list.tasks);
       return;
     }
@@ -2588,6 +2672,59 @@ function ensureTodayList(rawLists) {
   });
 
   return [todayList, ...regularLists];
+}
+
+function archiveCompletedTodayTasks(archiveDateKey) {
+  const todayList = lists.find(isTodayList);
+  if (!todayList) return false;
+
+  const completedTasks = todayList.tasks.filter((task) => task.completed);
+  if (completedTasks.length === 0) return false;
+
+  const archiveBlock = [
+    formatArchiveDate(archiveDateKey),
+    ...completedTasks.map((task) => `- ${task.title}`),
+    ""
+  ].join("\n");
+
+  completedArchiveText = appendArchiveText(completedArchiveText, archiveBlock);
+  todayList.tasks = todayList.tasks.filter((task) => !task.completed);
+  return true;
+}
+
+function appendArchiveText(existingText, nextBlock) {
+  const trimmedExisting = existingText.trimEnd();
+  return trimmedExisting ? `${trimmedExisting}\n\n${nextBlock}` : `${nextBlock}`;
+}
+
+function hydrateArchiveStateFromLists(sourceLists) {
+  const todayList = sourceLists.find(isTodayListCandidate);
+  if (!todayList) return;
+
+  if (typeof todayList.completedArchiveText === "string" && todayList.completedArchiveText.trim()) {
+    completedArchiveText = todayList.completedArchiveText;
+  }
+
+  if (todayList.lastTodayDateKey) {
+    lastTodayDateKey = todayList.lastTodayDateKey;
+  }
+
+  persistArchiveState();
+}
+
+function applyArchiveMetadataToLists(sourceLists) {
+  const nextLists = ensureTodayList(sourceLists);
+  const todayList = nextLists.find(isTodayList);
+  if (todayList) {
+    todayList.completedArchiveText = completedArchiveText;
+    todayList.lastTodayDateKey = lastTodayDateKey;
+  }
+  return nextLists;
+}
+
+function persistArchiveState() {
+  localStorage.setItem(completedArchiveKey, completedArchiveText);
+  localStorage.setItem(todayDateKeyStorageKey, lastTodayDateKey);
 }
 
 function isTodayList(list) {
@@ -2619,6 +2756,24 @@ function formatTodayDate() {
     month: "long",
     day: "numeric"
   }).format(new Date());
+}
+
+function formatArchiveDate(dateKey) {
+  const [year, month, day] = dateKey.split("-").map(Number);
+  const date = Number.isInteger(year) && Number.isInteger(month) && Number.isInteger(day)
+    ? new Date(year, month - 1, day)
+    : new Date();
+
+  return new Intl.DateTimeFormat(undefined, {
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric"
+  }).format(date);
+}
+
+function getCompletedArchiveExportText() {
+  return completedArchiveText.trimEnd();
 }
 
 function getDateKey(date = new Date()) {
