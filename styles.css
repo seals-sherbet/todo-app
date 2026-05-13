@@ -112,13 +112,14 @@ button {
 .topbar {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: space-between;
   gap: 10px;
   padding: 6px 0 8px;
 }
 
 .topbar-actions {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
 }
@@ -130,11 +131,24 @@ button {
 }
 
 .sync-status {
-  max-width: 92px;
+  max-width: 130px;
   overflow: hidden;
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-date {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 400;
+  line-height: 1.1;
+  text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -364,7 +378,7 @@ button:focus-visible {
 
 .filter-control {
   display: flex;
-  justify-content: flex-end;
+  justify-content: flex-start;
   border: 0;
   background: transparent;
   margin-bottom: 8px;
@@ -406,7 +420,7 @@ button:focus-visible {
 .settings-menu {
   position: absolute;
   top: calc(100% + 5px);
-  right: 0;
+  left: 0;
   z-index: 40;
   display: grid;
   min-width: 106px;
@@ -419,7 +433,7 @@ button:focus-visible {
 }
 
 .settings-menu {
-  min-width: 142px;
+  min-width: 150px;
 }
 
 .settings-menu-item {
@@ -440,7 +454,7 @@ button:focus-visible {
 }
 
 .list-section {
-  margin-top: 12px;
+  margin: 12px 0;
 }
 
 .list-board {
@@ -558,6 +572,19 @@ button:focus-visible {
 .standing-list:not(.is-pinned) .list-toggle {
   min-height: 20px;
   align-items: start;
+}
+
+.standing-list.is-pinned .list-header {
+  align-items: center;
+}
+
+.standing-list.is-pinned .list-toggle {
+  min-height: 20px;
+  align-items: center;
+}
+
+.standing-list.is-pinned .list-progress-text {
+  padding-top: 0;
 }
 
 .list-toggle {
@@ -1196,7 +1223,7 @@ button:focus-visible {
 
   .topbar-actions {
     flex-wrap: wrap;
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
 
   .sync-status {

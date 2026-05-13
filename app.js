@@ -14,7 +14,7 @@ const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
-const appVersion = "v0.82";
+const appVersion = "v0.84";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -756,6 +756,9 @@ function setSyncAuthBusy(form, isBusy) {
 }
 
 async function handleSyncButtonClick() {
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+
   if (!isSupabaseConfigured()) {
     notifyUser("Add your Supabase URL and anon key to sync-config.js, then run supabase-schema.sql in Supabase.");
     return;
@@ -1437,6 +1440,8 @@ function clearSyncErrorDetails() {
 
 async function handleSyncErrorButtonClick() {
   if (!syncLastErrorDetails) return;
+  settingsMenuOpen = false;
+  renderSettingsMenu();
 
   let copied = false;
   try {
@@ -1669,13 +1674,6 @@ function createListElement(list) {
     name.className = "list-name";
     name.textContent = list.name;
     title.append(name);
-
-    if (isTodayList(list)) {
-      const date = document.createElement("span");
-      date.className = "list-date";
-      date.textContent = todayText;
-      title.append(date);
-    }
 
     toggle.append(chevron, title);
     titleControl = toggle;

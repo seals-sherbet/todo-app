@@ -17,16 +17,13 @@
     <main class="app-shell">
       <header class="topbar">
         <div class="topbar-actions">
-          <div class="sync-control" aria-live="polite">
-            <span class="sync-status" id="syncStatus">Local</span>
-            <button class="sync-button" id="syncButton" type="button">Sync</button>
-            <button class="sync-error-button" id="syncErrorButton" type="button" hidden>Details</button>
-          </div>
           <div class="settings-menu-shell">
             <button class="settings-menu-button" id="settingsMenuButton" type="button" aria-haspopup="menu" aria-controls="settingsMenu" aria-expanded="false">
               Menu
             </button>
             <div class="settings-menu" id="settingsMenu" role="menu" aria-label="App menu" hidden>
+              <button class="menu-link settings-menu-item sync-button" id="syncButton" type="button" role="menuitem">Sync</button>
+              <button class="menu-link settings-menu-item sync-error-button is-danger" id="syncErrorButton" type="button" role="menuitem" hidden>Details</button>
               <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
               <button class="menu-link settings-menu-item" id="updateAppButton" type="button" role="menuitem">Update App</button>
               <button class="menu-link settings-menu-item" id="copyArchiveButton" type="button" role="menuitem">Copy Archive</button>
@@ -37,7 +34,11 @@
               </div>
             </div>
           </div>
+          <div class="sync-control" aria-live="polite">
+            <span class="sync-status" id="syncStatus">Local</span>
+          </div>
         </div>
+        <p class="header-date" id="todayLabel"></p>
       </header>
 
       <section class="today-section" aria-label="Today list">
@@ -58,6 +59,14 @@
         </div>
       </section>
 
+      <section class="list-section" aria-label="Standing lists">
+        <ul id="listBoard" class="list-board"></ul>
+        <div id="emptyState" class="empty-state" hidden>
+          <h2>No lists here</h2>
+          <p>Add a list or choose another view.</p>
+        </div>
+      </section>
+
       <section class="composer" aria-label="Create a standing list">
         <form id="listForm" class="list-form" autocomplete="off">
           <label class="field">
@@ -65,14 +74,6 @@
           </label>
           <button class="primary-button" type="submit">Add List</button>
         </form>
-      </section>
-
-      <section class="list-section" aria-label="Standing lists">
-        <ul id="listBoard" class="list-board"></ul>
-        <div id="emptyState" class="empty-state" hidden>
-          <h2>No lists here</h2>
-          <p>Add a list or choose another view.</p>
-        </div>
       </section>
 
       <section class="tomorrow-section" aria-label="Tomorrow queue">
