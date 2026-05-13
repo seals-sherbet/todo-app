@@ -14,7 +14,7 @@ const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
-const appVersion = "v0.81";
+const appVersion = "v0.82";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -25,6 +25,7 @@ const settingsMenuButton = document.querySelector("#settingsMenuButton");
 const settingsMenu = document.querySelector("#settingsMenu");
 const appVersionLabel = document.querySelector("#appVersion");
 const themeToggle = document.querySelector("#themeToggle");
+const updateAppButton = document.querySelector("#updateAppButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
 const downloadArchiveButton = document.querySelector("#downloadArchiveButton");
 const syncButton = document.querySelector("#syncButton");
@@ -532,6 +533,27 @@ themeToggle.addEventListener("click", () => {
   renderSettingsMenu();
 });
 
+updateAppButton.addEventListener("click", async () => {
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+
+  if (!("serviceWorker" in navigator) || !window.caches) {
+    window.location.reload();
+    return;
+  }
+
+  try {
+    const registrations = await navigator.serviceWorker.getRegistrations();
+    await Promise.all(registrations.map((registration) => registration.update().catch(() => {})));
+    const cacheNames = await caches.keys();
+    await Promise.all(cacheNames.filter((name) => name.startsWith("tasks-cache-")).map((name) => caches.delete(name)));
+  } catch {
+    // A normal reload still gives the browser a chance to pick up new app files.
+  }
+
+  window.location.reload();
+});
+
 copyArchiveButton.addEventListener("click", async () => {
   const archive = getCompletedArchiveExportText();
   if (!archive.trim()) {
@@ -598,7 +620,11 @@ window.addEventListener("focus", () => {
 
 if ("serviceWorker" in navigator && window.location.protocol !== "file:") {
   window.addEventListener("load", () => {
-    navigator.serviceWorker.register("sw.js").catch(() => {});
+    navigator.serviceWorker.register("sw.js", {
+      updateViaCache: "none"
+    }).then((registration) => {
+      registration.update().catch(() => {});
+    }).catch(() => {});
   });
 }
 
