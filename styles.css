@@ -140,6 +140,18 @@ button {
   white-space: nowrap;
 }
 
+.sync-status.is-saving {
+  color: var(--yellow);
+}
+
+.sync-status.is-error {
+  color: var(--danger);
+}
+
+.sync-status.is-offline {
+  color: var(--muted);
+}
+
 .header-date {
   min-width: 0;
   margin: 0;
@@ -206,6 +218,18 @@ h1 {
   font-weight: 400;
 }
 
+.settings-menu .sync-button,
+.settings-menu .sync-error-button {
+  min-height: 24px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  padding: 0 7px;
+  text-align: left;
+}
+
 .sync-auth-overlay {
   position: fixed;
   inset: 0;
@@ -223,6 +247,97 @@ h1 {
   background: var(--list-card);
   box-shadow: 0 18px 42px rgba(52, 55, 93, 0.18);
   padding: 16px;
+}
+
+.archive-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  background: color-mix(in srgb, var(--bg) 70%, transparent);
+  padding: 18px;
+}
+
+.archive-card {
+  display: grid;
+  width: min(420px, 100%);
+  max-height: min(72vh, 640px);
+  border: 2px solid var(--list-border);
+  border-radius: 18px;
+  background: var(--list-card);
+  box-shadow: 0 18px 42px rgba(52, 55, 93, 0.18);
+  padding: 16px;
+}
+
+.archive-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.archive-header h2 {
+  margin: 0;
+  color: var(--blue);
+  font-size: 1.1rem;
+  font-weight: 400;
+  line-height: 1.05;
+}
+
+.archive-close {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel-strong);
+  color: var(--text);
+  padding: 0 12px;
+  font-size: 0.78rem;
+}
+
+.archive-content {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.archive-day {
+  display: grid;
+  gap: 6px;
+}
+
+.archive-day h3,
+.archive-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 400;
+}
+
+.archive-day ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.archive-day li {
+  border-radius: 8px;
+  background: var(--task-row-bg);
+  color: var(--task-title);
+  padding: 7px 9px;
+  font-size: 0.86rem;
+  line-height: 1.2;
+}
+
+.archive-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 14px;
 }
 
 .sync-auth-header {
@@ -607,6 +722,14 @@ button:focus-visible {
   gap: 2px;
 }
 
+.list-title-line {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
 .list-rename-form {
   min-width: 0;
 }
@@ -629,6 +752,24 @@ button:focus-visible {
   font-size: 1.1rem;
   font-weight: 500;
   line-height: 1.05;
+}
+
+.list-scope-label {
+  display: inline-flex;
+  min-height: 16px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--shared-border) 78%, transparent);
+  border-radius: 999px;
+  color: var(--shared-progress);
+  padding: 0 6px;
+  font-size: 0.58rem;
+  font-weight: 400;
+  line-height: 1;
+}
+
+.list-scope-label.is-shared {
+  border-color: color-mix(in srgb, var(--shared-accent) 38%, var(--shared-border));
+  color: var(--shared-accent-strong);
 }
 
 .list-date {
@@ -1025,6 +1166,44 @@ button:focus-visible {
 
 .empty-state p {
   margin: 0;
+}
+
+.undo-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--tomorrow-footer-space) + max(8px, env(safe-area-inset-bottom)));
+  z-index: 80;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  width: min(536px, calc(100% - 20px));
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel-strong);
+  box-shadow: 0 12px 28px rgba(17, 19, 26, 0.18);
+  color: var(--text);
+  padding: 8px 10px;
+  transform: translateX(-50%);
+}
+
+.undo-toast span {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.76rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.undo-toast button {
+  min-height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent-strong);
+  padding: 0 10px;
+  font-size: 0.72rem;
 }
 
 .tomorrow-section {

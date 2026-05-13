@@ -14,7 +14,8 @@ const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
-const appVersion = "v0.84";
+const undoTimeoutMs = 8000;
+const appVersion = "v0.85";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -26,6 +27,7 @@ const settingsMenu = document.querySelector("#settingsMenu");
 const appVersionLabel = document.querySelector("#appVersion");
 const themeToggle = document.querySelector("#themeToggle");
 const updateAppButton = document.querySelector("#updateAppButton");
+const viewArchiveButton = document.querySelector("#viewArchiveButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
 const downloadArchiveButton = document.querySelector("#downloadArchiveButton");
 const syncButton = document.querySelector("#syncButton");
@@ -41,6 +43,15 @@ const syncEmailInput = document.querySelector("#syncEmailInput");
 const syncCodeForm = document.querySelector("#syncCodeForm");
 const syncCodeInput = document.querySelector("#syncCodeInput");
 const syncCodeBack = document.querySelector("#syncCodeBack");
+const archiveDialog = document.querySelector("#archiveDialog");
+const archiveClose = document.querySelector("#archiveClose");
+const archiveContent = document.querySelector("#archiveContent");
+const archiveCopy = document.querySelector("#archiveCopy");
+const archiveDownload = document.querySelector("#archiveDownload");
+const undoToast = document.querySelector("#undoToast");
+const undoMessage = document.querySelector("#undoMessage");
+const undoButton = document.querySelector("#undoButton");
+const undoDismiss = document.querySelector("#undoDismiss");
 const todayLabel = document.querySelector("#todayLabel");
 const filterMenuButton = document.querySelector("#filterMenuButton");
 const filterMenu = document.querySelector("#filterMenu");
@@ -94,6 +105,8 @@ let syncPendingAllShared = false;
 let syncPendingSharedListIds = new Set();
 let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
+let undoAction = null;
+let undoTimer = null;
 const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
@@ -112,6 +125,8 @@ if ("ResizeObserver" in window) {
 }
 
 window.addEventListener("resize", updateTomorrowFooterSpace);
+window.addEventListener("online", () => updateSyncUi());
+window.addEventListener("offline", () => updateSyncUi());
 
 listForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -336,7 +351,9 @@ async function handleTaskBoardClick(event) {
     const hasTasks = list.tasks.length > 0;
     const shouldDelete = !hasTasks || askToConfirm(`Delete "${list.name}" and its tasks?`);
     if (!shouldDelete) return;
+    const deletedList = cloneList(list);
     const deletedListId = list.id;
+    const deletedListIndex = lists.findIndex((item) => item.id === list.id);
     lists = lists.filter((item) => item.id !== list.id);
     expandedCompletedLists.delete(list.id);
     if (editingTask?.listId === list.id) {
@@ -349,6 +366,10 @@ async function handleTaskBoardClick(event) {
     openMenu = null;
     persistAndRender({ syncShared: false });
     await deleteRemoteList(deletedListId);
+    showUndo(`Deleted "${deletedList.name}".`, () => {
+      insertListAt(deletedList, deletedListIndex);
+      persistAndRender({ sharedListIds: [deletedList.id] });
+    });
     return;
   }
 
@@ -357,12 +378,19 @@ async function handleTaskBoardClick(event) {
   if (!task) return;
 
   if (button.dataset.action === "toggle-task") {
+    const previousTask = cloneTask(task);
+    const previousIndex = list.tasks.findIndex((item) => item.id === task.id);
     const wasCompleted = task.completed;
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : "";
     if (wasCompleted && !task.completed) {
       moveTaskToOpenBottom(list, task.id);
     }
+    showUndo(`${task.completed ? "Completed" : "Reopened"} "${task.title}".`, () => {
+      const currentList = findList(list.id);
+      restoreTaskSnapshot(currentList, previousTask, previousIndex);
+      persistAndRender({ sharedListIds: [list.id] });
+    });
   }
 
   if (button.dataset.action === "edit-task") {
@@ -375,15 +403,25 @@ async function handleTaskBoardClick(event) {
   }
 
   if (button.dataset.action === "delete-task") {
+    const deletedTask = cloneTask(task);
+    const deletedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
     if (isEditingTask(list.id, task.id)) {
       editingTask = null;
     }
     openMenu = null;
+    showUndo(`Deleted "${deletedTask.title}".`, () => {
+      const currentList = findList(list.id);
+      insertTaskAt(currentList, deletedTask, deletedTaskIndex);
+      persistAndRender({ sharedListIds: [list.id] });
+    });
   }
 
   if (button.dataset.action === "move-task-tomorrow") {
-    tomorrowQueue.push(createTomorrowQueueItem(task.title));
+    const movedTask = cloneTask(task);
+    const movedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
+    const queueItem = createTomorrowQueueItem(task.title);
+    tomorrowQueue.push(queueItem);
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
     if (isEditingTask(list.id, task.id)) {
       editingTask = null;
@@ -392,6 +430,13 @@ async function handleTaskBoardClick(event) {
     persistTomorrowQueue();
     persistAndRender({ sharedListIds: [list.id] });
     scrollTomorrowQueueToBottom();
+    showUndo(`Bumped "${movedTask.title}" to Tomorrow.`, () => {
+      tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== queueItem.id);
+      insertTaskAt(findList(list.id), movedTask, movedTaskIndex);
+      persistTomorrowQueue();
+      persistAndRender({ sharedListIds: [list.id] });
+      renderTomorrowQueue();
+    });
     return;
   }
 
@@ -491,9 +536,18 @@ tomorrowList.addEventListener("click", (event) => {
   if (!item) return;
 
   if (button.dataset.tomorrowAction === "delete") {
+    const removedIndex = tomorrowQueue.findIndex((entry) => entry.id === item.dataset.tomorrowId);
+    const removedItem = cloneTomorrowQueueItem(tomorrowQueue[removedIndex]);
     tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== item.dataset.tomorrowId);
     persistTomorrowQueue();
     renderTomorrowQueue();
+    if (removedItem) {
+      showUndo(`Removed "${removedItem.title}" from Tomorrow.`, () => {
+        insertTomorrowQueueItemAt(removedItem, removedIndex);
+        persistTomorrowQueue();
+        renderTomorrowQueue();
+      });
+    }
   }
 });
 
@@ -502,6 +556,11 @@ document.addEventListener("keydown", (event) => {
 
   if (!syncAuthDialog.hidden) {
     closeSyncAuthDialog();
+    return;
+  }
+
+  if (!archiveDialog.hidden) {
+    closeArchiveDialog();
     return;
   }
 
@@ -554,45 +613,39 @@ updateAppButton.addEventListener("click", async () => {
   window.location.reload();
 });
 
-copyArchiveButton.addEventListener("click", async () => {
-  const archive = getCompletedArchiveExportText();
-  if (!archive.trim()) {
+viewArchiveButton.addEventListener("click", () => {
+  if (!getCompletedArchiveExportText().trim()) {
     notifyUser("No completed tasks have been archived yet.");
     return;
   }
 
-  let copied = false;
-  try {
-    await navigator.clipboard?.writeText(archive);
-    copied = true;
-  } catch {
-    copied = false;
-  }
-
   settingsMenuOpen = false;
   renderSettingsMenu();
-  notifyUser(copied ? "Completed archive copied." : archive);
+  openArchiveDialog();
+});
+
+copyArchiveButton.addEventListener("click", async () => {
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+  await copyArchiveToClipboard();
 });
 
 downloadArchiveButton.addEventListener("click", () => {
-  const archive = getCompletedArchiveExportText();
-  if (!archive.trim()) {
-    notifyUser("No completed tasks have been archived yet.");
-    return;
-  }
-
-  const url = URL.createObjectURL(new Blob([archive], { type: "text/plain" }));
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `completed-tasks-archive-${getDateKey()}.txt`;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
-
   settingsMenuOpen = false;
   renderSettingsMenu();
+  downloadArchiveText();
 });
+
+archiveClose.addEventListener("click", closeArchiveDialog);
+archiveDialog.addEventListener("click", (event) => {
+  if (event.target === archiveDialog) {
+    closeArchiveDialog();
+  }
+});
+archiveCopy.addEventListener("click", copyArchiveToClipboard);
+archiveDownload.addEventListener("click", downloadArchiveText);
+undoButton.addEventListener("click", runUndoAction);
+undoDismiss.addEventListener("click", clearUndoAction);
 
 syncButton.addEventListener("click", handleSyncButtonClick);
 syncErrorButton.addEventListener("click", handleSyncErrorButtonClick);
@@ -1393,17 +1446,44 @@ function scheduleRemoteRefresh(payload) {
 
 function updateSyncUi(message = "") {
   const configured = isSupabaseConfigured();
-  const defaultMessage = configured ? (syncUser ? "Synced" : "Signed out") : "Local";
+  const defaultMessage = configured ? (syncUser ? "Saved" : "Not syncing") : "Local only";
+  const offline = configured && !navigator.onLine;
+  const nextMessage = message === "Sync error"
+    ? "Sync error"
+    : (offline ? "Offline" : normalizeSyncMessage(message || defaultMessage));
 
   if (message !== "Sync error") {
     clearSyncErrorDetails();
   }
-  syncStatus.textContent = message || defaultMessage;
+  syncStatus.textContent = nextMessage;
+  syncStatus.classList.toggle("is-error", nextMessage === "Sync error");
+  syncStatus.classList.toggle("is-saving", nextMessage === "Saving...");
+  syncStatus.classList.toggle("is-offline", nextMessage === "Offline");
   syncButton.textContent = configured ? (syncUser ? "Account" : "Sign in") : "Local";
   syncButton.classList.toggle("is-active", configured && Boolean(syncUser));
   syncButton.title = configured
     ? (syncUser ? `Signed in as ${syncUser.email || "Supabase user"}` : "Sign in to sync tasks")
     : "Add Supabase settings to enable sync";
+  syncStatus.title = syncButton.title;
+}
+
+function normalizeSyncMessage(message) {
+  const messages = {
+    "Checking sync...": "Checking...",
+    "Loading sync...": "Loading...",
+    "Sending code...": "Sending code...",
+    "Enter code": "Code sent",
+    "Verifying...": "Verifying...",
+    "Signing out...": "Signing out...",
+    "Signed out": "Not syncing",
+    "Synced": "Saved",
+    "Saving...": "Saving...",
+    "Setup needed": "Setup needed",
+    "Sync unavailable": "Sync unavailable",
+    "Sign-in error": "Sign-in error",
+    "Share error": "Share error"
+  };
+  return messages[message] || message;
 }
 
 function reportSyncError(context, error) {
@@ -1528,10 +1608,88 @@ function renderSettingsMenu() {
   themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
   const hasArchive = Boolean(getCompletedArchiveExportText().trim());
+  viewArchiveButton.disabled = !hasArchive;
   copyArchiveButton.disabled = !hasArchive;
   downloadArchiveButton.disabled = !hasArchive;
 
   if (appVersionLabel) appVersionLabel.textContent = appVersion;
+}
+
+function openArchiveDialog() {
+  renderArchiveDialog();
+  archiveDialog.hidden = false;
+  document.body.classList.add("has-modal");
+}
+
+function closeArchiveDialog() {
+  archiveDialog.hidden = true;
+  document.body.classList.remove("has-modal");
+}
+
+function renderArchiveDialog() {
+  const entries = getArchiveEntries();
+  archiveContent.replaceChildren();
+
+  if (entries.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "archive-empty";
+    empty.textContent = "No completed tasks have been archived yet.";
+    archiveContent.append(empty);
+    return;
+  }
+
+  entries.slice().reverse().forEach((entry) => {
+    const section = document.createElement("section");
+    section.className = "archive-day";
+
+    const title = document.createElement("h3");
+    title.textContent = entry.date;
+
+    const list = document.createElement("ul");
+    list.replaceChildren(...entry.items.map((item) => {
+      const row = document.createElement("li");
+      row.textContent = item;
+      return row;
+    }));
+
+    section.append(title, list);
+    archiveContent.append(section);
+  });
+}
+
+async function copyArchiveToClipboard() {
+  const archive = getCompletedArchiveExportText();
+  if (!archive.trim()) {
+    notifyUser("No completed tasks have been archived yet.");
+    return;
+  }
+
+  let copied = false;
+  try {
+    await navigator.clipboard?.writeText(archive);
+    copied = true;
+  } catch {
+    copied = false;
+  }
+
+  notifyUser(copied ? "Completed archive copied." : archive);
+}
+
+function downloadArchiveText() {
+  const archive = getCompletedArchiveExportText();
+  if (!archive.trim()) {
+    notifyUser("No completed tasks have been archived yet.");
+    return;
+  }
+
+  const url = URL.createObjectURL(new Blob([archive], { type: "text/plain" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `completed-tasks-archive-${getDateKey()}.txt`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function renderTomorrowQueue(options = {}) {
@@ -1626,6 +1784,16 @@ function getCompletedTime(task) {
   return new Date(task.completedAt || task.createdAt || 0).getTime();
 }
 
+function createListScopeLabel(list) {
+  if (isTodayList(list)) return null;
+
+  const label = document.createElement("span");
+  const shared = isSharedList(list);
+  label.className = `list-scope-label${shared ? " is-shared" : ""}`;
+  label.textContent = shared ? "Shared" : "Private";
+  return label;
+}
+
 function createListElement(list) {
   const item = document.createElement("li");
   const taskGroups = getTaskGroups(list);
@@ -1670,10 +1838,18 @@ function createListElement(list) {
     const title = document.createElement("span");
     title.className = "list-title";
 
+    const titleLine = document.createElement("span");
+    titleLine.className = "list-title-line";
+
     const name = document.createElement("span");
     name.className = "list-name";
     name.textContent = list.name;
-    title.append(name);
+    titleLine.append(name);
+    const scopeLabel = createListScopeLabel(list);
+    if (scopeLabel) {
+      titleLine.append(scopeLabel);
+    }
+    title.append(titleLine);
 
     toggle.append(chevron, title);
     titleControl = toggle;
@@ -2100,6 +2276,29 @@ function notifyUser(message) {
   });
 }
 
+function showUndo(message, undo) {
+  window.clearTimeout(undoTimer);
+  undoAction = typeof undo === "function" ? undo : null;
+  undoMessage.textContent = message;
+  undoToast.hidden = false;
+
+  undoTimer = window.setTimeout(clearUndoAction, undoTimeoutMs);
+}
+
+function clearUndoAction() {
+  window.clearTimeout(undoTimer);
+  undoTimer = null;
+  undoAction = null;
+  undoToast.hidden = true;
+  undoMessage.textContent = "";
+}
+
+function runUndoAction() {
+  const action = undoAction;
+  clearUndoAction();
+  action?.();
+}
+
 function runWithRemoteRefreshPaused(callback, fallbackValue = undefined) {
   syncDialogOpen = true;
   pauseRemoteRefresh(syncDialogPauseMs);
@@ -2175,6 +2374,48 @@ function normalizeList(list) {
 
 function normalizeTask(task) {
   return createTask(task.title || "Untitled task", task);
+}
+
+function cloneList(list) {
+  return normalizeList(JSON.parse(JSON.stringify(list)));
+}
+
+function cloneTask(task) {
+  return normalizeTask({ ...task });
+}
+
+function cloneTomorrowQueueItem(item) {
+  return item ? normalizeTomorrowQueueItem({ ...item }) : null;
+}
+
+function insertListAt(list, index) {
+  const nextList = cloneList(list);
+  const nextLists = ensureTodayList(lists).filter((item) => item.id !== nextList.id);
+  const insertIndex = Math.max(1, Math.min(Number.isInteger(index) ? index : nextLists.length, nextLists.length));
+  nextLists.splice(insertIndex, 0, nextList);
+  lists = ensureTodayList(nextLists);
+}
+
+function insertTaskAt(list, task, index) {
+  if (!list || !task) return;
+
+  const nextTask = cloneTask(task);
+  list.tasks = list.tasks.filter((item) => item.id !== nextTask.id);
+  const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : list.tasks.length, list.tasks.length));
+  list.tasks.splice(insertIndex, 0, nextTask);
+}
+
+function restoreTaskSnapshot(list, task, index) {
+  insertTaskAt(list, task, index);
+}
+
+function insertTomorrowQueueItemAt(item, index) {
+  const nextItem = cloneTomorrowQueueItem(item);
+  if (!nextItem) return;
+
+  tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== nextItem.id);
+  const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : tomorrowQueue.length, tomorrowQueue.length));
+  tomorrowQueue.splice(insertIndex, 0, nextItem);
 }
 
 function listToRow(list, position, updatedAt) {
@@ -2303,6 +2544,10 @@ function canEditList(list) {
 
 function canShareList(list) {
   return !isTodayList(list) && canManageList(list);
+}
+
+function isSharedList(list) {
+  return Boolean(list?.shared || list?.memberRole);
 }
 
 function normalizeEmail(email) {
@@ -2798,6 +3043,21 @@ function formatArchiveDate(dateKey) {
 
 function getCompletedArchiveExportText() {
   return completedArchiveText.trimEnd();
+}
+
+function getArchiveEntries() {
+  return getCompletedArchiveExportText()
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const [date, ...taskLines] = block.split("\n").map((line) => line.trim()).filter(Boolean);
+      return {
+        date: date || "Archived tasks",
+        items: taskLines.map((line) => line.replace(/^-\s*/, "")).filter(Boolean)
+      };
+    })
+    .filter((entry) => entry.items.length > 0);
 }
 
 function getDateKey(date = new Date()) {

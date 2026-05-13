@@ -26,6 +26,7 @@
               <button class="menu-link settings-menu-item sync-error-button is-danger" id="syncErrorButton" type="button" role="menuitem" hidden>Details</button>
               <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
               <button class="menu-link settings-menu-item" id="updateAppButton" type="button" role="menuitem">Update App</button>
+              <button class="menu-link settings-menu-item" id="viewArchiveButton" type="button" role="menuitem">View Archive</button>
               <button class="menu-link settings-menu-item" id="copyArchiveButton" type="button" role="menuitem">Copy Archive</button>
               <button class="menu-link settings-menu-item" id="downloadArchiveButton" type="button" role="menuitem">Download Archive</button>
               <div class="settings-version" role="presentation">
@@ -117,6 +118,26 @@
         </form>
         <p class="sync-auth-message" id="syncAuthMessage" aria-live="polite"></p>
       </section>
+    </div>
+
+    <div class="archive-overlay" id="archiveDialog" hidden>
+      <section class="archive-card" role="dialog" aria-modal="true" aria-labelledby="archiveTitle">
+        <div class="archive-header">
+          <h2 id="archiveTitle">Archive</h2>
+          <button class="archive-close" id="archiveClose" type="button">Close</button>
+        </div>
+        <div class="archive-content" id="archiveContent"></div>
+        <div class="archive-actions">
+          <button class="secondary-button" id="archiveCopy" type="button">Copy</button>
+          <button class="primary-button" id="archiveDownload" type="button">Download</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="undo-toast" id="undoToast" role="status" aria-live="polite" hidden>
+      <span id="undoMessage"></span>
+      <button id="undoButton" type="button">Undo</button>
+      <button id="undoDismiss" type="button" aria-label="Dismiss">Dismiss</button>
     </div>
 
     <script src="sync-config.js"></script>
