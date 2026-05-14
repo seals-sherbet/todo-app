@@ -3,6 +3,7 @@ const legacyStorageKey = "tasks.v1";
 const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
+const listCollapseKey = "tasks.listCollapse.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
 const completedArchiveKey = "tasks.completedArchive.v1";
 const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
@@ -17,7 +18,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.93";
+const appVersion = "v0.94";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -75,6 +76,7 @@ const filterLabels = {
 
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
+let listCollapsePrefs = loadListCollapsePrefs();
 let lastTodayDateKey = localStorage.getItem(todayDateKeyStorageKey) || getDateKey();
 let lists = loadLists();
 hydrateArchiveStateFromLists(lists);
@@ -187,6 +189,7 @@ function handleTaskBoardSubmit(event) {
     priority: form.elements.priority?.value || "normal"
   }));
   list.collapsed = false;
+  rememberListCollapsed(list.id, false);
   clearTaskFormDraft(list.id);
   activeTaskFormListId = list.id;
   persistAndRender({ sharedListIds: [list.id] });
@@ -296,20 +299,23 @@ async function handleTaskBoardClick(event) {
 
   if (button.dataset.action === "toggle-list") {
     list.collapsed = !list.collapsed;
-    markListUpdated(list);
+    rememberListCollapsed(list.id, list.collapsed);
     if (list.collapsed && activeTaskFormListId === list.id) {
       activeTaskFormListId = null;
     }
     if (list.collapsed && editingTask?.listId === list.id) {
       editingTask = null;
     }
-    persistAndRender({ sharedListIds: [list.id] });
+    persistLocalListsOnly();
+    render();
     return;
   }
 
   if (button.dataset.action === "show-task-form") {
     activeTaskFormListId = list.id;
     list.collapsed = false;
+    rememberListCollapsed(list.id, false);
+    persistLocalListsOnly();
     render();
     focusTaskInput(list.id);
     return;
@@ -701,6 +707,12 @@ initializeSync();
 function persistAndRender(options = {}) {
   persistLists(options);
   render();
+}
+
+function persistLocalListsOnly() {
+  lists = applyArchiveMetadataToLists(ensureTodayList(lists));
+  localStorage.setItem(storageKey, JSON.stringify(lists));
+  persistArchiveState();
 }
 
 function persistLists(options = {}) {
@@ -1689,6 +1701,35 @@ function loadCompletedArchiveText() {
   return localStorage.getItem(completedArchiveKey) || "";
 }
 
+function loadListCollapsePrefs() {
+  try {
+    const savedPrefs = JSON.parse(localStorage.getItem(listCollapseKey));
+    return savedPrefs && typeof savedPrefs === "object" && !Array.isArray(savedPrefs)
+      ? Object.fromEntries(Object.entries(savedPrefs).map(([listId, collapsed]) => [listId, Boolean(collapsed)]))
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function persistListCollapsePrefs() {
+  localStorage.setItem(listCollapseKey, JSON.stringify(listCollapsePrefs));
+}
+
+function getLocalListCollapsed(list) {
+  if (!list?.id) return Boolean(list?.collapsed);
+  if (Object.prototype.hasOwnProperty.call(listCollapsePrefs, list.id)) {
+    return Boolean(listCollapsePrefs[list.id]);
+  }
+  return Boolean(list.collapsed);
+}
+
+function rememberListCollapsed(listId, collapsed) {
+  if (!listId) return;
+  listCollapsePrefs[listId] = Boolean(collapsed);
+  persistListCollapsePrefs();
+}
+
 function render() {
   refreshTodayText();
   const todayList = lists.find(isTodayList);
@@ -2488,7 +2529,7 @@ function normalizeList(list) {
   return {
     id: list.id || uid(),
     name: list.name || "Untitled",
-    collapsed: Boolean(list.collapsed),
+    collapsed: getLocalListCollapsed(list),
     tasks,
     createdAt: list.createdAt || new Date().toISOString(),
     updatedAt: list.updatedAt || list.updated_at || list.createdAt || new Date().toISOString(),
@@ -2555,7 +2596,7 @@ function listToRow(list, position, updatedAt) {
     id: list.id,
     owner_id: list.ownerId || syncUser.id,
     name: list.name,
-    collapsed: Boolean(list.collapsed),
+    collapsed: false,
     type: list.type || "standard",
     show_details: Boolean(list.showDetails),
     created_at: list.createdAt || updatedAt,
@@ -2569,7 +2610,7 @@ function listToEditableRow(list, position, updatedAt) {
   const listUpdatedAt = list.updatedAt || list.updated_at || list.createdAt || updatedAt;
   return {
     name: list.name,
-    collapsed: Boolean(list.collapsed),
+    collapsed: false,
     type: list.type || "standard",
     show_details: Boolean(list.showDetails),
     created_at: list.createdAt || updatedAt,
@@ -3384,6 +3425,7 @@ function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
 
   targetList.tasks.splice(insertIndex, 0, task);
   targetList.collapsed = false;
+  rememberListCollapsed(targetList.id, false);
   markTaskOrderUpdated(sourceList);
   if (targetList.id !== sourceList.id) {
     markTaskOrderUpdated(targetList);
