@@ -17,7 +17,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.92";
+const appVersion = "v0.93";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -2903,11 +2903,13 @@ function mergePrivateState(localPrivateLists = [], localQueue = [], remotePrivat
 
 function mergeTodayLists(localToday, remoteToday) {
   const sources = [remoteToday, localToday].filter(Boolean);
+  const localUiState = localToday || remoteToday;
   const todayList = createList("Today", false, [], {
     id: todayListId,
     type: todayListType,
     createdAt: getEarliestDateValue(...sources.map((list) => list.createdAt)) || undefined,
-    showDetails: sources.some((list) => list.showDetails),
+    updatedAt: getLatestDateValue(...sources.map((list) => list.updatedAt)) || undefined,
+    showDetails: Boolean(localUiState?.showDetails),
     completedArchiveText: mergeArchiveText(
       completedArchiveText,
       ...sources.map((list) => list.completedArchiveText)
@@ -2915,7 +2917,7 @@ function mergeTodayLists(localToday, remoteToday) {
     lastTodayDateKey: getLatestDateKey(lastTodayDateKey, ...sources.map((list) => list.lastTodayDateKey))
   });
 
-  todayList.collapsed = sources.length > 0 && sources.every((list) => list.collapsed);
+  todayList.collapsed = Boolean(localUiState?.collapsed);
   todayList.deletedTaskTombstones = mergeTaskTombstones(...sources.map((list) => list.deletedTaskTombstones));
   todayList.tasks = filterTasksDeletedByTombstones(
     mergeTasks(localToday?.tasks || [], remoteToday?.tasks || []),
@@ -3008,7 +3010,6 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
         createdAt: item.createdAt
       }));
     }
-    todayList.collapsed = false;
   });
 
   return {
@@ -3485,7 +3486,6 @@ function rollTomorrowQueueIntoToday(options = {}) {
       createdAt: item.createdAt
     }));
   });
-  todayList.collapsed = false;
   tomorrowQueue = tomorrowQueue.filter((item) => item.targetDate > todayKey);
   persistLists({ syncShared: false });
   persistTomorrowQueue();
