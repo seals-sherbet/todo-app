@@ -18,7 +18,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.95";
+const appVersion = "v0.96";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -109,6 +109,7 @@ let syncSkipRemoteRefreshUntil = 0;
 let syncDialogOpen = false;
 let syncPendingAllShared = false;
 let syncPendingSharedListIds = new Set();
+let syncPendingTaskOrderListIds = new Set();
 let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
 let undoAction = null;
@@ -144,6 +145,7 @@ listForm.addEventListener("submit", (event) => {
     ownerId: getActiveUserId()
   });
   lists = ensureTodayList([list, ...lists]);
+  markSharedListOrderUpdated();
   listForm.reset();
   listName.focus();
   persistAndRender({ sharedListIds: [list.id] });
@@ -394,9 +396,14 @@ async function handleTaskBoardClick(event) {
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : "";
     markTaskUpdated(task);
+    const syncTaskOrderListIds = [];
     if (wasCompleted && !task.completed) {
       moveTaskToOpenBottom(list, task.id);
+      markTaskOrderUpdated(list);
+      syncTaskOrderListIds.push(list.id);
     }
+    persistAndRender({ sharedListIds: [list.id], syncTaskOrderListIds });
+    return;
   }
 
   if (button.dataset.action === "edit-task") {
@@ -1012,7 +1019,7 @@ async function loadRemoteState() {
     }
   }
 
-  const mergedSharedLists = mergeSharedLists(localStandingLists, sharedResult.lists);
+  const mergedSharedLists = applySharedListOrder(mergeSharedLists(localStandingLists, sharedResult.lists), privateLists);
 
   applyRemoteState({
     lists: [...privateLists, ...mergedSharedLists],
@@ -1063,6 +1070,12 @@ function queueRemoteSync(options = {}) {
 function rememberSyncScope(options = {}) {
   if (options.syncShared === false) return;
 
+  if (Array.isArray(options.syncTaskOrderListIds)) {
+    options.syncTaskOrderListIds.filter(Boolean).forEach((listId) => {
+      syncPendingTaskOrderListIds.add(listId);
+    });
+  }
+
   if (Array.isArray(options.sharedListIds)) {
     options.sharedListIds.filter(Boolean).forEach((listId) => {
       syncPendingSharedListIds.add(listId);
@@ -1083,6 +1096,7 @@ async function pushRemoteState() {
 
   const updatedAt = new Date().toISOString();
   const sharedLists = getPendingSharedLists();
+  const syncTaskOrderListIds = new Set(syncPendingTaskOrderListIds);
 
   const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, updatedAt);
   if (privateError) {
@@ -1090,7 +1104,9 @@ async function pushRemoteState() {
     return;
   }
 
-  const sharedError = await pushSharedLists(sharedLists, updatedAt);
+  const sharedError = await pushSharedLists(sharedLists, updatedAt, {
+    syncTaskOrderListIds
+  });
   if (sharedError) {
     clearPendingSharedSync();
     reportSyncError("Shared list sync", sharedError);
@@ -1113,6 +1129,7 @@ function getPendingSharedLists() {
 function clearPendingSharedSync() {
   syncPendingAllShared = false;
   syncPendingSharedListIds.clear();
+  syncPendingTaskOrderListIds.clear();
 }
 
 async function refreshSyncUser() {
@@ -1320,9 +1337,13 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
   return error;
 }
 
-async function pushSharedLists(standingLists = getStandingLists(lists), updatedAt = new Date().toISOString()) {
+async function pushSharedLists(standingLists = getStandingLists(lists), updatedAt = new Date().toISOString(), options = {}) {
   const uniqueStandingLists = uniqueListsById(standingLists);
   if (uniqueStandingLists.length === 0) return null;
+
+  const syncTaskOrderListIds = options.syncTaskOrderListIds instanceof Set
+    ? options.syncTaskOrderListIds
+    : new Set(options.syncTaskOrderListIds || []);
 
   uniqueStandingLists.forEach(ensureManagedListOwner);
   const sharedPositionById = getSharedPositionByListId(uniqueStandingLists);
@@ -1333,7 +1354,10 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   const managedListRows = uniqueStandingLists
     .map((list, index) => ({ list, index }))
     .filter(({ list }) => canManageList(list))
-    .map(({ list, index }) => listToRow(list, getSharedListPosition(sharedPositionById, list, index), updatedAt))
+    .map(({ list, index }) => {
+      const existingRow = existingListRowsById.get(list.id);
+      return listToRow(list, getSharedListPosition(sharedPositionById, list, index, existingRow), updatedAt);
+    })
     .filter((row) => shouldPushListRow(row, existingListRowsById.get(row.id)));
 
   for (const row of managedListRows) {
@@ -1349,7 +1373,8 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
 
   for (const [index, list] of uniqueStandingLists.entries()) {
     if (canManageList(list) || !canEditList(list)) continue;
-    const row = listToEditableRow(list, getSharedListPosition(sharedPositionById, list, index), updatedAt);
+    const existingRow = existingListRowsById.get(list.id);
+    const row = listToEditableRow(list, getSharedListPosition(sharedPositionById, list, index, existingRow), updatedAt);
     if (!shouldPushListRow({ id: list.id, ...row }, existingListRowsById.get(list.id))) continue;
 
     const listResult = await syncClient
@@ -1364,7 +1389,9 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   for (const list of uniqueStandingLists) {
     if (!canEditList(list)) continue;
 
-    const taskError = await syncSharedTasks(list, updatedAt);
+    const taskError = await syncSharedTasks(list, updatedAt, {
+      syncTaskOrder: syncTaskOrderListIds.has(list.id)
+    });
     if (taskError) return taskError;
   }
 
@@ -1386,7 +1413,10 @@ function getSharedPositionByListId(fallbackLists = []) {
   return positionById;
 }
 
-function getSharedListPosition(positionById, list, fallbackIndex) {
+function getSharedListPosition(positionById, list, fallbackIndex, existingRow = null) {
+  if (Number.isInteger(existingRow?.position)) {
+    return existingRow.position;
+  }
   return positionById.has(list.id) ? positionById.get(list.id) : fallbackIndex;
 }
 
@@ -1396,7 +1426,7 @@ async function fetchExistingListRows(listIds) {
 
   return syncClient
     .from("task_lists")
-    .select("id,updated_at")
+    .select("id,position,updated_at")
     .in("id", uniqueListIds);
 }
 
@@ -1429,7 +1459,8 @@ function ensureManagedListOwner(list) {
   list.ownerId = syncUser.id;
 }
 
-async function syncSharedTasks(list, updatedAt) {
+async function syncSharedTasks(list, updatedAt, options = {}) {
+  const syncTaskOrder = Boolean(options.syncTaskOrder);
   const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
   const existingResult = await syncClient
     .from("tasks")
@@ -1439,8 +1470,9 @@ async function syncSharedTasks(list, updatedAt) {
   if (existingResult.error) return existingResult.error;
 
   const existingRowsById = new Map((existingResult.data || []).map((row) => [row.id, row]));
+  const nextTaskRows = preserveRemoteTaskPositions(taskRows, existingResult.data || [], syncTaskOrder);
   const tombstoneRows = getSharedDeletionTombstones(list).map((tombstone, index) => deletedTaskToRow(tombstone, taskRows.length + index));
-  const rowsToUpsert = [...taskRows, ...tombstoneRows].filter((row) => shouldPushTaskRow(row, existingRowsById.get(row.id)));
+  const rowsToUpsert = [...nextTaskRows, ...tombstoneRows].filter((row) => shouldPushTaskRow(row, existingRowsById.get(row.id)));
 
   if (rowsToUpsert.length > 0) {
     for (const row of rowsToUpsert) {
@@ -1451,6 +1483,21 @@ async function syncSharedTasks(list, updatedAt) {
 
   clearSyncedSharedDeletionTombstones(list.id);
   return null;
+}
+
+function preserveRemoteTaskPositions(taskRows, existingRows = [], syncTaskOrder = false) {
+  if (syncTaskOrder) return taskRows;
+
+  const existingPositionById = new Map(existingRows.map((row) => [row.id, row.position]));
+  return taskRows.map((row) => {
+    const existingPosition = existingPositionById.get(row.id);
+    if (!Number.isInteger(existingPosition)) return row;
+
+    return {
+      ...row,
+      position: existingPosition
+    };
+  });
 }
 
 async function upsertTaskRow(row) {
@@ -2536,6 +2583,8 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     memberRole: options.memberRole || "",
     completedArchiveText: typeof options.completedArchiveText === "string" ? options.completedArchiveText : "",
     lastTodayDateKey: options.lastTodayDateKey || "",
+    sharedListOrder: normalizeSharedListOrder(options.sharedListOrder),
+    sharedListOrderUpdatedAt: options.sharedListOrderUpdatedAt || "",
     deletedTaskTombstones: normalizeTaskTombstones(options.deletedTaskTombstones)
   };
 }
@@ -2560,8 +2609,21 @@ function normalizeList(list) {
     memberRole: list.memberRole || list.member_role || "",
     completedArchiveText: typeof list.completedArchiveText === "string" ? list.completedArchiveText : "",
     lastTodayDateKey: list.lastTodayDateKey || "",
+    sharedListOrder: normalizeSharedListOrder(list.sharedListOrder),
+    sharedListOrderUpdatedAt: list.sharedListOrderUpdatedAt || "",
     deletedTaskTombstones
   };
+}
+
+function normalizeSharedListOrder(order) {
+  const seen = new Set();
+  return Array.isArray(order)
+    ? order.filter((id) => {
+      if (typeof id !== "string" || !id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    : [];
 }
 
 function normalizeTask(task) {
@@ -2586,6 +2648,7 @@ function insertListAt(list, index) {
   const insertIndex = Math.max(1, Math.min(Number.isInteger(index) ? index : nextLists.length, nextLists.length));
   nextLists.splice(insertIndex, 0, nextList);
   lists = ensureTodayList(nextLists);
+  markSharedListOrderUpdated();
 }
 
 function insertTaskAt(list, task, index) {
@@ -2884,6 +2947,18 @@ function mergeSharedLists(localLists = [], remoteLists = []) {
   return mergedLists;
 }
 
+function applySharedListOrder(sharedLists = [], privateLists = []) {
+  const { order } = getSharedListOrderMetadataFromLists(privateLists);
+  if (order.length === 0) return sharedLists;
+
+  const orderIndexById = new Map(order.map((listId, index) => [listId, index]));
+  return [...sharedLists].sort((first, second) => {
+    const firstIndex = orderIndexById.has(first.id) ? orderIndexById.get(first.id) : Number.MAX_SAFE_INTEGER;
+    const secondIndex = orderIndexById.has(second.id) ? orderIndexById.get(second.id) : Number.MAX_SAFE_INTEGER;
+    return firstIndex - secondIndex;
+  });
+}
+
 function mergeSharedList(localList, remoteList) {
   const local = normalizeList(localList);
   const remote = normalizeList(remoteList);
@@ -2900,6 +2975,32 @@ function mergeSharedList(localList, remoteList) {
   );
 
   return merged;
+}
+
+function getSharedListOrderMetadataFromLists(sourceLists = lists) {
+  const todayList = ensureTodayList(sourceLists).find(isTodayList);
+  const savedOrder = normalizeSharedListOrder(todayList?.sharedListOrder);
+  const currentOrder = getStandingLists(sourceLists).map((list) => list.id);
+
+  return {
+    order: savedOrder.length > 0 ? savedOrder : currentOrder,
+    updatedAt: todayList?.sharedListOrderUpdatedAt || ""
+  };
+}
+
+function getLatestSharedListOrderMetadata(...sourceLists) {
+  return sourceLists.reduce((latest, list) => {
+    const candidate = {
+      order: normalizeSharedListOrder(list?.sharedListOrder),
+      updatedAt: list?.sharedListOrderUpdatedAt || ""
+    };
+
+    if (candidate.order.length === 0 && !candidate.updatedAt) return latest;
+    if (!latest.updatedAt || isTimestampNewer(candidate.updatedAt, latest.updatedAt) || candidate.updatedAt === latest.updatedAt) {
+      return candidate;
+    }
+    return latest;
+  }, { order: [], updatedAt: "" });
 }
 
 function shouldPushListRow(row, existingRow) {
@@ -2920,9 +3021,14 @@ function markTaskUpdated(task, updatedAt = new Date().toISOString()) {
   if (task) task.updatedAt = updatedAt;
 }
 
-function markStandingListOrderUpdated() {
-  const updatedAt = new Date().toISOString();
-  getStandingLists(lists).forEach((list) => markListUpdated(list, updatedAt));
+function markSharedListOrderUpdated(updatedAt = new Date().toISOString()) {
+  lists = ensureTodayList(lists);
+  const todayList = lists.find(isTodayList);
+  if (!todayList) return;
+
+  todayList.sharedListOrder = getStandingLists(lists).map((list) => list.id);
+  todayList.sharedListOrderUpdatedAt = updatedAt;
+  markListUpdated(todayList, updatedAt);
 }
 
 function markTaskOrderUpdated(list) {
@@ -2965,6 +3071,7 @@ function mergePrivateState(localPrivateLists = [], localQueue = [], remotePrivat
 function mergeTodayLists(localToday, remoteToday) {
   const sources = [remoteToday, localToday].filter(Boolean);
   const localUiState = localToday || remoteToday;
+  const sharedOrder = getLatestSharedListOrderMetadata(remoteToday, localToday);
   const todayList = createList("Today", false, [], {
     id: todayListId,
     type: todayListType,
@@ -2975,7 +3082,9 @@ function mergeTodayLists(localToday, remoteToday) {
       completedArchiveText,
       ...sources.map((list) => list.completedArchiveText)
     ),
-    lastTodayDateKey: getLatestDateKey(lastTodayDateKey, ...sources.map((list) => list.lastTodayDateKey))
+    lastTodayDateKey: getLatestDateKey(lastTodayDateKey, ...sources.map((list) => list.lastTodayDateKey)),
+    sharedListOrder: sharedOrder.order,
+    sharedListOrderUpdatedAt: sharedOrder.updatedAt
   });
 
   todayList.collapsed = Boolean(localUiState?.collapsed);
@@ -3164,10 +3273,13 @@ function getActiveUserId() {
 }
 
 function getPrivateLists(sourceLists = lists) {
+  const sharedOrder = getSharedListOrderMetadataFromLists(sourceLists);
   return ensureTodayList(sourceLists).filter(isTodayList).map((list) => ({
     ...list,
     completedArchiveText,
-    lastTodayDateKey
+    lastTodayDateKey,
+    sharedListOrder: sharedOrder.order,
+    sharedListOrderUpdatedAt: sharedOrder.updatedAt
   }));
 }
 
@@ -3409,8 +3521,8 @@ function moveList(sourceListId, targetListId, position) {
   const targetIndex = lists.findIndex((item) => item.id === targetListId);
   if (targetIndex < 0) {
     lists.push(list);
-    markStandingListOrderUpdated();
-    persistAndRender();
+    markSharedListOrderUpdated();
+    persistAndRender({ syncShared: false });
     return;
   }
 
@@ -3420,8 +3532,8 @@ function moveList(sourceListId, targetListId, position) {
   }
   insertIndex = Math.max(1, insertIndex);
   lists.splice(insertIndex, 0, list);
-  markStandingListOrderUpdated();
-  persistAndRender();
+  markSharedListOrderUpdated();
+  persistAndRender({ syncShared: false });
 }
 
 function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
@@ -3453,7 +3565,10 @@ function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
   if (isEditingTask(sourceListId, taskId)) {
     editingTask = null;
   }
-  persistAndRender({ sharedListIds: [sourceList.id, targetList.id] });
+  persistAndRender({
+    sharedListIds: [sourceList.id, targetList.id],
+    syncTaskOrderListIds: [sourceList.id, targetList.id]
+  });
 }
 
 function moveTaskToOpenBottom(list, taskId) {
@@ -3587,6 +3702,9 @@ function ensureTodayList(rawLists) {
         ? list.completedArchiveText
         : todayList.completedArchiveText;
       todayList.lastTodayDateKey = list.lastTodayDateKey || todayList.lastTodayDateKey;
+      const sharedOrder = getLatestSharedListOrderMetadata(todayList, list);
+      todayList.sharedListOrder = sharedOrder.order;
+      todayList.sharedListOrderUpdatedAt = sharedOrder.updatedAt;
       todayList.updatedAt = getLatestDateValue(todayList.updatedAt, list.updatedAt) || todayList.updatedAt;
       todayList.deletedTaskTombstones = mergeTaskTombstones(todayList.deletedTaskTombstones, list.deletedTaskTombstones);
       todayList.tasks.push(...list.tasks);
