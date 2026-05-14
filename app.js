@@ -15,7 +15,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.89";
+const appVersion = "v0.90";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -379,19 +379,12 @@ async function handleTaskBoardClick(event) {
   if (!task) return;
 
   if (button.dataset.action === "toggle-task") {
-    const previousTask = cloneTask(task);
-    const previousIndex = list.tasks.findIndex((item) => item.id === task.id);
     const wasCompleted = task.completed;
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : "";
     if (wasCompleted && !task.completed) {
       moveTaskToOpenBottom(list, task.id);
     }
-    showUndo(`${task.completed ? "Completed" : "Reopened"} "${task.title}".`, () => {
-      const currentList = findList(list.id);
-      restoreTaskSnapshot(currentList, previousTask, previousIndex);
-      persistAndRender({ sharedListIds: [list.id] });
-    });
   }
 
   if (button.dataset.action === "edit-task") {
