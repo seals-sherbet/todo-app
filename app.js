@@ -15,7 +15,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.88";
+const appVersion = "v0.89";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -946,15 +946,21 @@ async function loadRemoteState() {
   const privateRemoteLists = Array.isArray(privateDocument?.lists)
     ? privateDocument.lists.map(normalizeList)
     : null;
-  const privateLists = privateRemoteLists
+  const localPrivateLists = getPrivateLists(lists);
+  const remotePrivateLists = privateRemoteLists
     ? ensureTodayList(privateRemoteLists).filter(isTodayList)
-    : getPrivateLists(lists);
+    : [];
   const documentStandingLists = privateRemoteLists
     ? privateRemoteLists.filter((list) => !isTodayListCandidate(list))
     : [];
-  const nextTomorrowQueue = privateDocument
+  const remoteTomorrowQueue = privateDocument
     ? normalizeTomorrowQueue(privateDocument.tomorrow_queue)
-    : tomorrowQueue;
+    : [];
+  const mergedPrivateState = privateDocument
+    ? mergePrivateState(localPrivateLists, tomorrowQueue, remotePrivateLists, remoteTomorrowQueue)
+    : rollDueQueueIntoPrivateState(localPrivateLists, tomorrowQueue);
+  const privateLists = mergedPrivateState.lists;
+  const nextTomorrowQueue = mergedPrivateState.tomorrowQueue;
 
   if (documentStandingLists.length > 0) {
     await pushSharedLists(documentStandingLists);
@@ -963,6 +969,12 @@ async function loadRemoteState() {
     if (sharedResult.error) {
       updateSyncUi("Setup needed");
       notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
+      return;
+    }
+  } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, privateLists, nextTomorrowQueue)) {
+    const privateError = await pushPrivateState(privateLists, nextTomorrowQueue);
+    if (privateError) {
+      reportSyncError("Private sync", privateError);
       return;
     }
   } else if (!privateDocument) {
@@ -1248,17 +1260,29 @@ async function fetchSharedLists() {
 }
 
 async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, updatedAt = new Date().toISOString()) {
+  const mergedState = await getMergedPrivateStateForPush(privateLists, queue);
+  if (mergedState.error) return mergedState.error;
+
   const { error } = await syncClient
     .from("task_documents")
     .upsert({
       user_id: syncUser.id,
-      lists: privateLists,
-      tomorrow_queue: queue,
+      lists: mergedState.lists,
+      tomorrow_queue: mergedState.tomorrowQueue,
       updated_at: updatedAt,
       device_id: syncDeviceId
     }, {
       onConflict: "user_id"
     });
+
+  if (!error) {
+    hydrateArchiveStateFromLists(mergedState.lists);
+    lists = applyArchiveMetadataToLists(ensureTodayList([...mergedState.lists, ...getStandingLists(lists)]));
+    tomorrowQueue = mergedState.tomorrowQueue;
+    localStorage.setItem(storageKey, JSON.stringify(lists));
+    localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+    persistArchiveState();
+  }
 
   return error;
 }
@@ -2551,6 +2575,205 @@ function normalizeTomorrowQueue(queue) {
   return Array.isArray(queue) ? queue.map(normalizeTomorrowQueueItem).filter(Boolean) : [];
 }
 
+async function getMergedPrivateStateForPush(privateLists, queue) {
+  const localState = rollDueQueueIntoPrivateState(privateLists, queue);
+  const remoteResult = await fetchPrivateDocument();
+  if (remoteResult.error) {
+    return { ...localState, error: remoteResult.error };
+  }
+
+  if (!remoteResult.data) {
+    return { ...localState, error: null };
+  }
+
+  const remoteLists = Array.isArray(remoteResult.data.lists)
+    ? ensureTodayList(remoteResult.data.lists.map(normalizeList)).filter(isTodayList)
+    : [];
+  const remoteQueue = normalizeTomorrowQueue(remoteResult.data.tomorrow_queue);
+
+  return {
+    ...mergePrivateState(localState.lists, localState.tomorrowQueue, remoteLists, remoteQueue),
+    error: null
+  };
+}
+
+// Multiple installed app instances can wake up with stale private state, so private sync preserves items from both sides.
+function mergePrivateState(localPrivateLists = [], localQueue = [], remotePrivateLists = [], remoteQueue = []) {
+  const localToday = ensureTodayList(localPrivateLists.map(normalizeList)).find(isTodayList);
+  const remoteToday = ensureTodayList(remotePrivateLists.map(normalizeList)).find(isTodayList);
+  const mergedToday = mergeTodayLists(localToday, remoteToday);
+  const mergedQueue = mergeTomorrowQueues(localQueue, remoteQueue);
+
+  return rollDueQueueIntoPrivateState([mergedToday], mergedQueue);
+}
+
+function mergeTodayLists(localToday, remoteToday) {
+  const sources = [remoteToday, localToday].filter(Boolean);
+  const todayList = createList("Today", false, [], {
+    id: todayListId,
+    type: todayListType,
+    createdAt: getEarliestDateValue(...sources.map((list) => list.createdAt)) || undefined,
+    showDetails: sources.some((list) => list.showDetails),
+    completedArchiveText: mergeArchiveText(
+      completedArchiveText,
+      ...sources.map((list) => list.completedArchiveText)
+    ),
+    lastTodayDateKey: getLatestDateKey(lastTodayDateKey, ...sources.map((list) => list.lastTodayDateKey))
+  });
+
+  todayList.collapsed = sources.length > 0 && sources.every((list) => list.collapsed);
+  todayList.tasks = mergeTasks(localToday?.tasks || [], remoteToday?.tasks || []);
+  return todayList;
+}
+
+function mergeTasks(primaryTasks = [], secondaryTasks = []) {
+  const taskOrder = [];
+  const tasksById = new Map();
+
+  [...primaryTasks, ...secondaryTasks].forEach((task) => {
+    const nextTask = normalizeTask(task);
+    if (!tasksById.has(nextTask.id)) {
+      taskOrder.push(nextTask.id);
+      tasksById.set(nextTask.id, nextTask);
+      return;
+    }
+
+    tasksById.set(nextTask.id, mergeTaskState(tasksById.get(nextTask.id), nextTask));
+  });
+
+  return taskOrder.map((taskId) => tasksById.get(taskId)).filter(Boolean);
+}
+
+function mergeTaskState(existing, incoming) {
+  const existingTask = normalizeTask(existing);
+  const incomingTask = normalizeTask(incoming);
+  const completed = existingTask.completed || incomingTask.completed;
+  const completedAt = getLatestDateValue(existingTask.completedAt, incomingTask.completedAt);
+
+  return {
+    ...existingTask,
+    title: existingTask.title || incomingTask.title,
+    due: existingTask.due || incomingTask.due || "",
+    priority: existingTask.priority !== "normal" ? existingTask.priority : incomingTask.priority,
+    completed,
+    completedAt: completed ? completedAt || existingTask.completedAt || incomingTask.completedAt || "" : "",
+    createdAt: getEarliestDateValue(existingTask.createdAt, incomingTask.createdAt) || existingTask.createdAt
+  };
+}
+
+function mergeTomorrowQueues(primaryQueue = [], secondaryQueue = []) {
+  const queueOrder = [];
+  const queueById = new Map();
+
+  [...normalizeTomorrowQueue(primaryQueue), ...normalizeTomorrowQueue(secondaryQueue)].forEach((item) => {
+    if (!queueById.has(item.id)) {
+      queueOrder.push(item.id);
+      queueById.set(item.id, item);
+      return;
+    }
+
+    queueById.set(item.id, mergeTomorrowQueueItem(queueById.get(item.id), item));
+  });
+
+  return queueOrder.map((itemId) => queueById.get(itemId)).filter(Boolean);
+}
+
+function mergeTomorrowQueueItem(existing, incoming) {
+  return createTomorrowQueueItem(existing.title || incoming.title, {
+    id: existing.id || incoming.id,
+    targetDate: getEarliestDateKey(existing.targetDate, incoming.targetDate) || existing.targetDate || incoming.targetDate,
+    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt
+  });
+}
+
+function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
+  const todayKey = getDateKey();
+  const nextLists = ensureTodayList(privateLists.map(normalizeList)).filter(isTodayList);
+  const todayList = nextLists.find(isTodayList);
+  const remainingQueue = [];
+
+  normalizeTomorrowQueue(queue).forEach((item) => {
+    if (item.targetDate > todayKey) {
+      remainingQueue.push(item);
+      return;
+    }
+
+    const taskId = getRolledTomorrowTaskId(item);
+    if (!todayList.tasks.some((task) => task.id === taskId)) {
+      todayList.tasks.push(createTask(item.title, {
+        id: taskId,
+        createdAt: item.createdAt
+      }));
+    }
+    todayList.collapsed = false;
+  });
+
+  return {
+    lists: nextLists,
+    tomorrowQueue: remainingQueue
+  };
+}
+
+function getRolledTomorrowTaskId(item) {
+  return `tomorrow-${item.id}`;
+}
+
+function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], nextLists = [], nextQueue = []) {
+  return JSON.stringify(remoteLists) !== JSON.stringify(nextLists)
+    || JSON.stringify(remoteQueue) !== JSON.stringify(nextQueue);
+}
+
+function mergeArchiveText(...texts) {
+  const blocks = [];
+  const seen = new Set();
+
+  texts.forEach((text) => {
+    String(text || "")
+      .trim()
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean)
+      .forEach((block) => {
+        if (seen.has(block)) return;
+        seen.add(block);
+        blocks.push(block);
+      });
+  });
+
+  return blocks.join("\n\n");
+}
+
+function getEarliestDateValue(...values) {
+  return values
+    .filter(isValidDateValue)
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime())[0] || "";
+}
+
+function getLatestDateValue(...values) {
+  const sortedValues = values
+    .filter(isValidDateValue)
+    .sort((a, b) => new Date(a).getTime() - new Date(b).getTime());
+  return sortedValues[sortedValues.length - 1] || "";
+}
+
+function getEarliestDateKey(...keys) {
+  return keys.filter(isDateKey).sort()[0] || "";
+}
+
+function getLatestDateKey(...keys) {
+  const sortedKeys = keys.filter(isDateKey).sort();
+  return sortedKeys[sortedKeys.length - 1] || "";
+}
+
+function isValidDateValue(value) {
+  if (!value) return false;
+  return !Number.isNaN(new Date(value).getTime());
+}
+
+function isDateKey(value) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(value || ""));
+}
+
 function findList(id) {
   return lists.find((list) => list.id === id);
 }
@@ -2925,7 +3148,13 @@ function rollTomorrowQueueIntoToday(options = {}) {
   if (!todayList) return;
 
   dueItems.forEach((item) => {
-    todayList.tasks.push(createTask(item.title));
+    const taskId = getRolledTomorrowTaskId(item);
+    if (todayList.tasks.some((task) => task.id === taskId)) return;
+
+    todayList.tasks.push(createTask(item.title, {
+      id: taskId,
+      createdAt: item.createdAt
+    }));
   });
   todayList.collapsed = false;
   tomorrowQueue = tomorrowQueue.filter((item) => item.targetDate > todayKey);
