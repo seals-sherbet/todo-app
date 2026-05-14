@@ -18,7 +18,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.94";
+const appVersion = "v0.95";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -1325,6 +1325,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   if (uniqueStandingLists.length === 0) return null;
 
   uniqueStandingLists.forEach(ensureManagedListOwner);
+  const sharedPositionById = getSharedPositionByListId(uniqueStandingLists);
   const existingListRowsResult = await fetchExistingListRows(uniqueStandingLists.map((list) => list.id));
   if (existingListRowsResult.error) return existingListRowsResult.error;
   const existingListRowsById = new Map((existingListRowsResult.data || []).map((row) => [row.id, row]));
@@ -1332,7 +1333,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   const managedListRows = uniqueStandingLists
     .map((list, index) => ({ list, index }))
     .filter(({ list }) => canManageList(list))
-    .map(({ list, index }) => listToRow(list, index, updatedAt))
+    .map(({ list, index }) => listToRow(list, getSharedListPosition(sharedPositionById, list, index), updatedAt))
     .filter((row) => shouldPushListRow(row, existingListRowsById.get(row.id)));
 
   for (const row of managedListRows) {
@@ -1348,7 +1349,7 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
 
   for (const [index, list] of uniqueStandingLists.entries()) {
     if (canManageList(list) || !canEditList(list)) continue;
-    const row = listToEditableRow(list, index, updatedAt);
+    const row = listToEditableRow(list, getSharedListPosition(sharedPositionById, list, index), updatedAt);
     if (!shouldPushListRow({ id: list.id, ...row }, existingListRowsById.get(list.id))) continue;
 
     const listResult = await syncClient
@@ -1368,6 +1369,25 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   return null;
+}
+
+function getSharedPositionByListId(fallbackLists = []) {
+  const positionById = new Map();
+  getStandingLists(lists).forEach((list, index) => {
+    positionById.set(list.id, index);
+  });
+
+  fallbackLists.forEach((list, index) => {
+    if (!positionById.has(list.id)) {
+      positionById.set(list.id, index);
+    }
+  });
+
+  return positionById;
+}
+
+function getSharedListPosition(positionById, list, fallbackIndex) {
+  return positionById.has(list.id) ? positionById.get(list.id) : fallbackIndex;
 }
 
 async function fetchExistingListRows(listIds) {
