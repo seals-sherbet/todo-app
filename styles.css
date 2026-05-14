@@ -768,8 +768,9 @@ button:focus-visible {
 }
 
 .list-scope-label.is-shared {
-  border-color: color-mix(in srgb, var(--shared-accent) 38%, var(--shared-border));
-  color: var(--shared-accent-strong);
+  border-color: var(--shared-accent);
+  background: var(--shared-accent);
+  color: #ffffff;
 }
 
 .list-date {

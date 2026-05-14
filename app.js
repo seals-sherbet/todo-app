@@ -17,7 +17,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.91";
+const appVersion = "v0.92";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
