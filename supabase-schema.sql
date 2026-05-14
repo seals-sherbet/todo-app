@@ -187,6 +187,7 @@ begin
     updated_at = excluded.updated_at,
     device_id = excluded.device_id
   where public.task_lists.owner_id = auth.uid()
+    and public.task_lists.updated_at <= excluded.updated_at
   returning public.task_lists.id, public.task_lists.owner_id;
 end;
 ';
@@ -197,6 +198,106 @@ grant execute on function public.upsert_task_list(
   boolean,
   text,
   boolean,
+  timestamptz,
+  integer,
+  timestamptz,
+  text
+) to authenticated;
+
+drop function if exists public.upsert_task_if_newer(
+  text,
+  text,
+  text,
+  date,
+  text,
+  boolean,
+  timestamptz,
+  timestamptz,
+  integer,
+  timestamptz,
+  text
+);
+
+create or replace function public.upsert_task_if_newer(
+  target_id text,
+  target_list_id text,
+  target_title text,
+  target_due date,
+  target_priority text,
+  target_completed boolean,
+  target_completed_at timestamptz,
+  target_created_at timestamptz,
+  target_position integer,
+  target_updated_at timestamptz,
+  target_device_id text
+)
+returns table(task_id text)
+language plpgsql
+security definer
+set search_path = public
+as '
+begin
+  if auth.uid() is null then
+    raise exception ''Not signed in'';
+  end if;
+
+  if not public.can_edit_task_list(target_list_id) then
+    raise exception ''You do not have permission to edit this list'';
+  end if;
+
+  return query
+  insert into public.tasks (
+    id,
+    list_id,
+    title,
+    due,
+    priority,
+    completed,
+    completed_at,
+    created_at,
+    position,
+    updated_at,
+    device_id
+  )
+  values (
+    target_id,
+    target_list_id,
+    target_title,
+    target_due,
+    target_priority,
+    target_completed,
+    target_completed_at,
+    target_created_at,
+    target_position,
+    target_updated_at,
+    target_device_id
+  )
+  on conflict on constraint tasks_pkey do update
+  set
+    list_id = excluded.list_id,
+    title = excluded.title,
+    due = excluded.due,
+    priority = excluded.priority,
+    completed = excluded.completed,
+    completed_at = excluded.completed_at,
+    created_at = excluded.created_at,
+    position = excluded.position,
+    updated_at = excluded.updated_at,
+    device_id = excluded.device_id
+  where public.can_edit_task_list(public.tasks.list_id)
+    and public.tasks.updated_at <= excluded.updated_at
+  returning public.tasks.id;
+end;
+';
+
+grant execute on function public.upsert_task_if_newer(
+  text,
+  text,
+  text,
+  date,
+  text,
+  boolean,
+  timestamptz,
   timestamptz,
   integer,
   timestamptz,

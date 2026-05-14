@@ -5,7 +5,9 @@ const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
 const completedArchiveKey = "tasks.completedArchive.v1";
+const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
+const deletedTaskTitle = "__tasks_deleted__";
 const todayListId = "pinned-today";
 const todayListType = "today";
 const completedPreviewLimit = 2;
@@ -15,7 +17,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.90";
+const appVersion = "v0.91";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -72,6 +74,7 @@ const filterLabels = {
 };
 
 let completedArchiveText = loadCompletedArchiveText();
+let deletedSharedTasks = loadDeletedSharedTasks();
 let lastTodayDateKey = localStorage.getItem(todayDateKeyStorageKey) || getDateKey();
 let lists = loadLists();
 hydrateArchiveStateFromLists(lists);
@@ -293,6 +296,7 @@ async function handleTaskBoardClick(event) {
 
   if (button.dataset.action === "toggle-list") {
     list.collapsed = !list.collapsed;
+    markListUpdated(list);
     if (list.collapsed && activeTaskFormListId === list.id) {
       activeTaskFormListId = null;
     }
@@ -313,6 +317,7 @@ async function handleTaskBoardClick(event) {
 
   if (button.dataset.action === "toggle-fields") {
     list.showDetails = !list.showDetails;
+    markListUpdated(list);
     openMenu = null;
     persistAndRender({ sharedListIds: [list.id] });
     return;
@@ -382,6 +387,7 @@ async function handleTaskBoardClick(event) {
     const wasCompleted = task.completed;
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : "";
+    markTaskUpdated(task);
     if (wasCompleted && !task.completed) {
       moveTaskToOpenBottom(list, task.id);
     }
@@ -399,6 +405,8 @@ async function handleTaskBoardClick(event) {
   if (button.dataset.action === "delete-task") {
     const deletedTask = cloneTask(task);
     const deletedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
+    const deletedAt = new Date().toISOString();
+    rememberTaskDeletion(list, deletedTask, deletedAt);
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
     if (isEditingTask(list.id, task.id)) {
       editingTask = null;
@@ -406,6 +414,8 @@ async function handleTaskBoardClick(event) {
     openMenu = null;
     showUndo(`Deleted "${deletedTask.title}".`, () => {
       const currentList = findList(list.id);
+      forgetTaskDeletion(currentList, deletedTask.id);
+      markTaskUpdated(deletedTask);
       insertTaskAt(currentList, deletedTask, deletedTaskIndex);
       persistAndRender({ sharedListIds: [list.id] });
     });
@@ -415,6 +425,8 @@ async function handleTaskBoardClick(event) {
     const movedTask = cloneTask(task);
     const movedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
     const queueItem = createTomorrowQueueItem(task.title);
+    const deletedAt = new Date().toISOString();
+    rememberTaskDeletion(list, movedTask, deletedAt);
     tomorrowQueue.push(queueItem);
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
     if (isEditingTask(list.id, task.id)) {
@@ -426,6 +438,8 @@ async function handleTaskBoardClick(event) {
     scrollTomorrowQueueToBottom();
     showUndo(`Bumped "${movedTask.title}" to Tomorrow.`, () => {
       tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== queueItem.id);
+      forgetTaskDeletion(findList(list.id), movedTask.id);
+      markTaskUpdated(movedTask);
       insertTaskAt(findList(list.id), movedTask, movedTaskIndex);
       persistTomorrowQueue();
       persistAndRender({ sharedListIds: [list.id] });
@@ -986,8 +1000,10 @@ async function loadRemoteState() {
     }
   }
 
+  const mergedSharedLists = mergeSharedLists(localStandingLists, sharedResult.lists);
+
   applyRemoteState({
-    lists: [...privateLists, ...sharedResult.lists],
+    lists: [...privateLists, ...mergedSharedLists],
     tomorrowQueue: nextTomorrowQueue,
     updatedAt: privateDocument?.updated_at || new Date().toISOString()
   });
@@ -1232,7 +1248,14 @@ async function fetchSharedLists() {
     }
   }
 
+  const deletedTasksByList = {};
   const tasksByList = taskRows.reduce((groups, row) => {
+    if (isDeletedTaskRow(row)) {
+      deletedTasksByList[row.list_id] ||= [];
+      deletedTasksByList[row.list_id].push(taskTombstoneFromRow(row));
+      return groups;
+    }
+
     groups[row.list_id] ||= [];
     groups[row.list_id].push(rowToTask(row));
     return groups;
@@ -1247,7 +1270,12 @@ async function fetchSharedLists() {
   ]);
 
   return {
-    lists: listRows.map((row) => rowToList(row, tasksByList[row.id] || [], roleByList[row.id] || "", sharedListIds.has(row.id))),
+    lists: listRows.map((row) => {
+      const list = rowToList(row, tasksByList[row.id] || [], roleByList[row.id] || "", sharedListIds.has(row.id));
+      list.deletedTaskTombstones = normalizeTaskTombstones(deletedTasksByList[row.id] || []);
+      list.tasks = filterTasksDeletedByTombstones(list.tasks, list.deletedTaskTombstones);
+      return list;
+    }),
     error: null
   };
 }
@@ -1285,11 +1313,15 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   if (uniqueStandingLists.length === 0) return null;
 
   uniqueStandingLists.forEach(ensureManagedListOwner);
+  const existingListRowsResult = await fetchExistingListRows(uniqueStandingLists.map((list) => list.id));
+  if (existingListRowsResult.error) return existingListRowsResult.error;
+  const existingListRowsById = new Map((existingListRowsResult.data || []).map((row) => [row.id, row]));
 
   const managedListRows = uniqueStandingLists
     .map((list, index) => ({ list, index }))
     .filter(({ list }) => canManageList(list))
-    .map(({ list, index }) => listToRow(list, index, updatedAt));
+    .map(({ list, index }) => listToRow(list, index, updatedAt))
+    .filter((row) => shouldPushListRow(row, existingListRowsById.get(row.id)));
 
   for (const row of managedListRows) {
     const listResult = await upsertOwnedTaskList(row);
@@ -1304,11 +1336,14 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
 
   for (const [index, list] of uniqueStandingLists.entries()) {
     if (canManageList(list) || !canEditList(list)) continue;
+    const row = listToEditableRow(list, index, updatedAt);
+    if (!shouldPushListRow({ id: list.id, ...row }, existingListRowsById.get(list.id))) continue;
 
     const listResult = await syncClient
       .from("task_lists")
-      .update(listToEditableRow(list, index, updatedAt))
-      .eq("id", list.id);
+      .update(row)
+      .eq("id", list.id)
+      .lte("updated_at", row.updated_at);
 
     if (listResult.error) return listResult.error;
   }
@@ -1321,6 +1356,16 @@ async function pushSharedLists(standingLists = getStandingLists(lists), updatedA
   }
 
   return null;
+}
+
+async function fetchExistingListRows(listIds) {
+  const uniqueListIds = [...new Set(listIds.filter(Boolean))];
+  if (uniqueListIds.length === 0) return { data: [], error: null };
+
+  return syncClient
+    .from("task_lists")
+    .select("id,updated_at")
+    .in("id", uniqueListIds);
 }
 
 async function upsertOwnedTaskList(row) {
@@ -1354,38 +1399,56 @@ function ensureManagedListOwner(list) {
 
 async function syncSharedTasks(list, updatedAt) {
   const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
-
-  if (taskRows.length > 0) {
-    const taskResult = await syncClient
-      .from("tasks")
-      .upsert(taskRows, {
-        onConflict: "id"
-      });
-
-    if (taskResult.error) return taskResult.error;
-  }
-
   const existingResult = await syncClient
     .from("tasks")
-    .select("id")
+    .select("id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at")
     .eq("list_id", list.id);
 
   if (existingResult.error) return existingResult.error;
 
-  const localTaskIds = new Set(taskRows.map((task) => task.id));
-  const staleTaskIds = (existingResult.data || [])
-    .map((task) => task.id)
-    .filter((taskId) => !localTaskIds.has(taskId));
+  const existingRowsById = new Map((existingResult.data || []).map((row) => [row.id, row]));
+  const tombstoneRows = getSharedDeletionTombstones(list).map((tombstone, index) => deletedTaskToRow(tombstone, taskRows.length + index));
+  const rowsToUpsert = [...taskRows, ...tombstoneRows].filter((row) => shouldPushTaskRow(row, existingRowsById.get(row.id)));
 
-  if (staleTaskIds.length === 0) return null;
+  if (rowsToUpsert.length > 0) {
+    for (const row of rowsToUpsert) {
+      const taskError = await upsertTaskRow(row);
+      if (taskError) return taskError;
+    }
+  }
 
-  const deleteResult = await syncClient
+  clearSyncedSharedDeletionTombstones(list.id);
+  return null;
+}
+
+async function upsertTaskRow(row) {
+  const result = await syncClient.rpc("upsert_task_if_newer", {
+    target_id: row.id,
+    target_list_id: row.list_id,
+    target_title: row.title,
+    target_due: row.due,
+    target_priority: row.priority,
+    target_completed: row.completed,
+    target_completed_at: row.completed_at,
+    target_created_at: row.created_at,
+    target_position: row.position,
+    target_updated_at: row.updated_at,
+    target_device_id: row.device_id
+  });
+
+  if (!result.error) return null;
+  if (!isMissingRpcError(result.error)) return result.error;
+
+  const fallbackResult = await syncClient
     .from("tasks")
-    .delete()
-    .eq("list_id", list.id)
-    .in("id", staleTaskIds);
+    .upsert(row, {
+      onConflict: "id"
+    });
+  return fallbackResult.error;
+}
 
-  return deleteResult.error;
+function isMissingRpcError(error) {
+  return error?.code === "42883" || /function .* does not exist/i.test(error?.message || "");
 }
 
 async function deleteRemoteList(listId) {
@@ -2280,6 +2343,7 @@ function finishListRename(form) {
   const nextName = form.elements.name.value.trim();
   if (nextName) {
     list.name = nextName;
+    markListUpdated(list);
   }
 
   editingListId = null;
@@ -2297,6 +2361,7 @@ function finishTaskRename(form) {
   const nextTitle = form.elements.title.value.trim();
   if (nextTitle) {
     task.title = nextTitle;
+    markTaskUpdated(task);
   }
 
   editingTask = null;
@@ -2379,6 +2444,7 @@ function shouldSkipRemoteRefresh() {
 function createTask(title, options = {}) {
   const completed = Boolean(options.completed);
   const createdAt = options.createdAt || new Date().toISOString();
+  const updatedAt = options.updatedAt || options.updated_at || createdAt;
   const priorities = ["normal", "high", "low"];
 
   return {
@@ -2388,41 +2454,52 @@ function createTask(title, options = {}) {
     priority: priorities.includes(options.priority) ? options.priority : "normal",
     completed,
     completedAt: options.completedAt || (completed ? createdAt : ""),
-    createdAt
+    createdAt,
+    updatedAt
   };
 }
 
 function createList(name, collapsed = false, tasks = [], options = {}) {
+  const createdAt = options.createdAt || new Date().toISOString();
   return {
     id: options.id || uid(),
     name,
     collapsed,
     tasks,
-    createdAt: options.createdAt || new Date().toISOString(),
+    createdAt,
+    updatedAt: options.updatedAt || options.updated_at || createdAt,
     type: options.type || "standard",
     showDetails: Boolean(options.showDetails),
     ownerId: options.ownerId || "",
     shared: Boolean(options.shared),
     memberRole: options.memberRole || "",
     completedArchiveText: typeof options.completedArchiveText === "string" ? options.completedArchiveText : "",
-    lastTodayDateKey: options.lastTodayDateKey || ""
+    lastTodayDateKey: options.lastTodayDateKey || "",
+    deletedTaskTombstones: normalizeTaskTombstones(options.deletedTaskTombstones)
   };
 }
 
 function normalizeList(list) {
+  const deletedTaskTombstones = normalizeTaskTombstones(list.deletedTaskTombstones);
+  const tasks = Array.isArray(list.tasks)
+    ? filterTasksDeletedByTombstones(list.tasks.map(normalizeTask), deletedTaskTombstones)
+    : [];
+
   return {
     id: list.id || uid(),
     name: list.name || "Untitled",
     collapsed: Boolean(list.collapsed),
-    tasks: Array.isArray(list.tasks) ? list.tasks.map(normalizeTask) : [],
+    tasks,
     createdAt: list.createdAt || new Date().toISOString(),
+    updatedAt: list.updatedAt || list.updated_at || list.createdAt || new Date().toISOString(),
     type: list.type || "standard",
     showDetails: Boolean(list.showDetails),
     ownerId: list.ownerId || list.owner_id || "",
     shared: Boolean(list.shared),
     memberRole: list.memberRole || list.member_role || "",
     completedArchiveText: typeof list.completedArchiveText === "string" ? list.completedArchiveText : "",
-    lastTodayDateKey: list.lastTodayDateKey || ""
+    lastTodayDateKey: list.lastTodayDateKey || "",
+    deletedTaskTombstones
   };
 }
 
@@ -2473,6 +2550,7 @@ function insertTomorrowQueueItemAt(item, index) {
 }
 
 function listToRow(list, position, updatedAt) {
+  const listUpdatedAt = list.updatedAt || list.updated_at || list.createdAt || updatedAt;
   return {
     id: list.id,
     owner_id: list.ownerId || syncUser.id,
@@ -2482,12 +2560,13 @@ function listToRow(list, position, updatedAt) {
     show_details: Boolean(list.showDetails),
     created_at: list.createdAt || updatedAt,
     position,
-    updated_at: updatedAt,
+    updated_at: listUpdatedAt,
     device_id: syncDeviceId
   };
 }
 
 function listToEditableRow(list, position, updatedAt) {
+  const listUpdatedAt = list.updatedAt || list.updated_at || list.createdAt || updatedAt;
   return {
     name: list.name,
     collapsed: Boolean(list.collapsed),
@@ -2495,12 +2574,13 @@ function listToEditableRow(list, position, updatedAt) {
     show_details: Boolean(list.showDetails),
     created_at: list.createdAt || updatedAt,
     position,
-    updated_at: updatedAt,
+    updated_at: listUpdatedAt,
     device_id: syncDeviceId
   };
 }
 
 function taskToRow(task, listId, position, updatedAt) {
+  const taskUpdatedAt = task.updatedAt || task.updated_at || task.createdAt || updatedAt;
   return {
     id: task.id,
     list_id: listId,
@@ -2511,6 +2591,23 @@ function taskToRow(task, listId, position, updatedAt) {
     completed_at: task.completedAt || null,
     created_at: task.createdAt || updatedAt,
     position,
+    updated_at: taskUpdatedAt,
+    device_id: syncDeviceId
+  };
+}
+
+function deletedTaskToRow(tombstone, position = 0) {
+  const updatedAt = tombstone.updatedAt || new Date().toISOString();
+  return {
+    id: tombstone.taskId,
+    list_id: tombstone.listId,
+    title: deletedTaskTitle,
+    due: null,
+    priority: "normal",
+    completed: true,
+    completed_at: updatedAt,
+    created_at: tombstone.createdAt || updatedAt,
+    position,
     updated_at: updatedAt,
     device_id: syncDeviceId
   };
@@ -2520,6 +2617,7 @@ function rowToList(row, tasks, memberRole = "", shared = false) {
   return createList(row.name || "Untitled", Boolean(row.collapsed), tasks, {
     id: row.id,
     createdAt: row.created_at,
+    updatedAt: row.updated_at,
     type: row.type || "standard",
     showDetails: row.show_details,
     ownerId: row.owner_id,
@@ -2535,7 +2633,8 @@ function rowToTask(row) {
     priority: row.priority || "normal",
     completed: row.completed,
     completedAt: row.completed_at || "",
-    createdAt: row.created_at
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
   });
 }
 
@@ -2566,6 +2665,208 @@ function normalizeTomorrowQueueItem(item) {
 
 function normalizeTomorrowQueue(queue) {
   return Array.isArray(queue) ? queue.map(normalizeTomorrowQueueItem).filter(Boolean) : [];
+}
+
+function loadDeletedSharedTasks() {
+  try {
+    return normalizeTaskTombstones(JSON.parse(localStorage.getItem(sharedTaskDeletionKey)));
+  } catch {
+    return [];
+  }
+}
+
+function persistDeletedSharedTasks() {
+  localStorage.setItem(sharedTaskDeletionKey, JSON.stringify(deletedSharedTasks));
+}
+
+function normalizeTaskTombstones(tombstones) {
+  if (!Array.isArray(tombstones)) return [];
+  return mergeTaskTombstones(tombstones.map(normalizeTaskTombstone).filter(Boolean));
+}
+
+function normalizeTaskTombstone(tombstone) {
+  const taskId = tombstone?.taskId || tombstone?.task_id || tombstone?.id;
+  const listId = tombstone?.listId || tombstone?.list_id || "";
+  if (!taskId) return null;
+
+  const updatedAt = tombstone.updatedAt || tombstone.updated_at || new Date().toISOString();
+  return {
+    taskId,
+    listId,
+    createdAt: tombstone.createdAt || tombstone.created_at || updatedAt,
+    updatedAt
+  };
+}
+
+function mergeTaskTombstones(...tombstoneGroups) {
+  const tombstonesByKey = new Map();
+
+  tombstoneGroups.flat().filter(Boolean).forEach((tombstone) => {
+    const nextTombstone = normalizeTaskTombstone(tombstone);
+    if (!nextTombstone) return;
+
+    const key = getTaskTombstoneKey(nextTombstone.listId, nextTombstone.taskId);
+    const existing = tombstonesByKey.get(key);
+    if (!existing || isTimestampNewer(nextTombstone.updatedAt, existing.updatedAt)) {
+      tombstonesByKey.set(key, nextTombstone);
+    }
+  });
+
+  return Array.from(tombstonesByKey.values());
+}
+
+function filterTasksDeletedByTombstones(tasks = [], tombstones = []) {
+  const tombstonesByTaskId = new Map(
+    normalizeTaskTombstones(tombstones).map((tombstone) => [tombstone.taskId, tombstone])
+  );
+
+  return tasks.filter((task) => {
+    const tombstone = tombstonesByTaskId.get(task.id);
+    if (!tombstone) return true;
+    return isTimestampNewer(getItemUpdatedAt(task), tombstone.updatedAt);
+  });
+}
+
+function isDeletedTaskRow(row) {
+  return row?.title === deletedTaskTitle;
+}
+
+function taskTombstoneFromRow(row) {
+  return normalizeTaskTombstone({
+    taskId: row.id,
+    listId: row.list_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at
+  });
+}
+
+function getTaskTombstoneKey(listId, taskId) {
+  return `${listId || ""}:${taskId}`;
+}
+
+function rememberTaskDeletion(list, task, deletedAt = new Date().toISOString()) {
+  if (!list || !task) return;
+
+  if (isTodayList(list)) {
+    rememberPrivateTaskDeletion(list, task, deletedAt);
+    return;
+  }
+
+  rememberSharedTaskDeletion(list, task, deletedAt);
+}
+
+function rememberPrivateTaskDeletion(list, task, deletedAt = new Date().toISOString()) {
+  const tombstone = normalizeTaskTombstone({
+    taskId: task.id,
+    listId: list.id,
+    createdAt: task.createdAt,
+    updatedAt: deletedAt
+  });
+  list.deletedTaskTombstones = mergeTaskTombstones(list.deletedTaskTombstones, [tombstone]);
+}
+
+function rememberSharedTaskDeletion(list, task, deletedAt = new Date().toISOString()) {
+  const tombstone = normalizeTaskTombstone({
+    taskId: task.id,
+    listId: list.id,
+    createdAt: task.createdAt,
+    updatedAt: deletedAt
+  });
+
+  list.deletedTaskTombstones = mergeTaskTombstones(list.deletedTaskTombstones, [tombstone]);
+  deletedSharedTasks = mergeTaskTombstones(deletedSharedTasks, [tombstone]);
+  persistDeletedSharedTasks();
+}
+
+function forgetTaskDeletion(list, taskId) {
+  if (!list || !taskId) return;
+  const key = getTaskTombstoneKey(list.id, taskId);
+  list.deletedTaskTombstones = normalizeTaskTombstones(list.deletedTaskTombstones)
+    .filter((tombstone) => getTaskTombstoneKey(tombstone.listId, tombstone.taskId) !== key);
+
+  if (!isTodayList(list)) {
+    deletedSharedTasks = deletedSharedTasks
+      .filter((tombstone) => getTaskTombstoneKey(tombstone.listId, tombstone.taskId) !== key);
+    persistDeletedSharedTasks();
+  }
+}
+
+function getSharedDeletionTombstones(list) {
+  return mergeTaskTombstones(
+    list.deletedTaskTombstones,
+    deletedSharedTasks.filter((tombstone) => tombstone.listId === list.id)
+  );
+}
+
+function clearSyncedSharedDeletionTombstones(listId) {
+  const beforeCount = deletedSharedTasks.length;
+  deletedSharedTasks = deletedSharedTasks.filter((tombstone) => tombstone.listId !== listId);
+  if (deletedSharedTasks.length !== beforeCount) {
+    persistDeletedSharedTasks();
+  }
+}
+
+function mergeSharedLists(localLists = [], remoteLists = []) {
+  const localListsById = new Map(localLists.map((list) => [list.id, normalizeList(list)]));
+  const remoteListIds = new Set(remoteLists.map((list) => list.id));
+  const mergedLists = remoteLists.map((remoteList) => {
+    const localList = localListsById.get(remoteList.id);
+    return localList ? mergeSharedList(localList, remoteList) : normalizeList(remoteList);
+  });
+
+  localLists.forEach((localList) => {
+    if (!remoteListIds.has(localList.id)) {
+      mergedLists.push(normalizeList(localList));
+    }
+  });
+
+  return mergedLists;
+}
+
+function mergeSharedList(localList, remoteList) {
+  const local = normalizeList(localList);
+  const remote = normalizeList(remoteList);
+  const winner = isTimestampNewer(remote.updatedAt, local.updatedAt) ? remote : local;
+  const merged = cloneList(winner);
+
+  merged.ownerId = remote.ownerId || local.ownerId;
+  merged.memberRole = remote.memberRole || local.memberRole;
+  merged.shared = remote.shared || local.shared;
+  merged.deletedTaskTombstones = mergeTaskTombstones(local.deletedTaskTombstones, remote.deletedTaskTombstones);
+  merged.tasks = filterTasksDeletedByTombstones(
+    mergeTasks(local.tasks, remote.tasks),
+    merged.deletedTaskTombstones
+  );
+
+  return merged;
+}
+
+function shouldPushListRow(row, existingRow) {
+  if (!existingRow?.updated_at) return true;
+  return isTimestampNewer(row.updated_at, existingRow.updated_at);
+}
+
+function shouldPushTaskRow(row, existingRow) {
+  if (!existingRow?.updated_at) return true;
+  return isTimestampNewer(row.updated_at, existingRow.updated_at);
+}
+
+function markListUpdated(list, updatedAt = new Date().toISOString()) {
+  if (list) list.updatedAt = updatedAt;
+}
+
+function markTaskUpdated(task, updatedAt = new Date().toISOString()) {
+  if (task) task.updatedAt = updatedAt;
+}
+
+function markStandingListOrderUpdated() {
+  const updatedAt = new Date().toISOString();
+  getStandingLists(lists).forEach((list) => markListUpdated(list, updatedAt));
+}
+
+function markTaskOrderUpdated(list) {
+  const updatedAt = new Date().toISOString();
+  list?.tasks.forEach((task) => markTaskUpdated(task, updatedAt));
 }
 
 async function getMergedPrivateStateForPush(privateLists, queue) {
@@ -2615,7 +2916,11 @@ function mergeTodayLists(localToday, remoteToday) {
   });
 
   todayList.collapsed = sources.length > 0 && sources.every((list) => list.collapsed);
-  todayList.tasks = mergeTasks(localToday?.tasks || [], remoteToday?.tasks || []);
+  todayList.deletedTaskTombstones = mergeTaskTombstones(...sources.map((list) => list.deletedTaskTombstones));
+  todayList.tasks = filterTasksDeletedByTombstones(
+    mergeTasks(localToday?.tasks || [], remoteToday?.tasks || []),
+    todayList.deletedTaskTombstones
+  );
   return todayList;
 }
 
@@ -2640,17 +2945,18 @@ function mergeTasks(primaryTasks = [], secondaryTasks = []) {
 function mergeTaskState(existing, incoming) {
   const existingTask = normalizeTask(existing);
   const incomingTask = normalizeTask(incoming);
-  const completed = existingTask.completed || incomingTask.completed;
-  const completedAt = getLatestDateValue(existingTask.completedAt, incomingTask.completedAt);
+  const winner = isTimestampNewer(incomingTask.updatedAt, existingTask.updatedAt) ? incomingTask : existingTask;
+  const fallback = winner.id === existingTask.id && winner.updatedAt === existingTask.updatedAt ? incomingTask : existingTask;
 
   return {
-    ...existingTask,
-    title: existingTask.title || incomingTask.title,
-    due: existingTask.due || incomingTask.due || "",
-    priority: existingTask.priority !== "normal" ? existingTask.priority : incomingTask.priority,
-    completed,
-    completedAt: completed ? completedAt || existingTask.completedAt || incomingTask.completedAt || "" : "",
-    createdAt: getEarliestDateValue(existingTask.createdAt, incomingTask.createdAt) || existingTask.createdAt
+    ...winner,
+    title: winner.title || fallback.title,
+    due: winner.due || "",
+    priority: winner.priority || "normal",
+    completed: Boolean(winner.completed),
+    completedAt: winner.completed ? winner.completedAt || fallback.completedAt || "" : "",
+    createdAt: getEarliestDateValue(existingTask.createdAt, incomingTask.createdAt) || winner.createdAt,
+    updatedAt: getLatestDateValue(existingTask.updatedAt, incomingTask.updatedAt) || winner.updatedAt
   };
 }
 
@@ -2683,6 +2989,7 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
   const todayKey = getDateKey();
   const nextLists = ensureTodayList(privateLists.map(normalizeList)).filter(isTodayList);
   const todayList = nextLists.find(isTodayList);
+  todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
   const remainingQueue = [];
 
   normalizeTomorrowQueue(queue).forEach((item) => {
@@ -2692,6 +2999,9 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
     }
 
     const taskId = getRolledTomorrowTaskId(item);
+    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
+      return;
+    }
     if (!todayList.tasks.some((task) => task.id === taskId)) {
       todayList.tasks.push(createTask(item.title, {
         id: taskId,
@@ -2756,6 +3066,22 @@ function getEarliestDateKey(...keys) {
 function getLatestDateKey(...keys) {
   const sortedKeys = keys.filter(isDateKey).sort();
   return sortedKeys[sortedKeys.length - 1] || "";
+}
+
+function getItemUpdatedAt(item) {
+  return item?.updatedAt || item?.updated_at || item?.completedAt || item?.createdAt || "";
+}
+
+function isTimestampNewer(candidate, reference) {
+  const candidateTime = getTimestamp(candidate);
+  const referenceTime = getTimestamp(reference);
+  return candidateTime > referenceTime;
+}
+
+function getTimestamp(value) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
 }
 
 function isValidDateValue(value) {
@@ -3021,6 +3347,7 @@ function moveList(sourceListId, targetListId, position) {
   const targetIndex = lists.findIndex((item) => item.id === targetListId);
   if (targetIndex < 0) {
     lists.push(list);
+    markStandingListOrderUpdated();
     persistAndRender();
     return;
   }
@@ -3031,6 +3358,7 @@ function moveList(sourceListId, targetListId, position) {
   }
   insertIndex = Math.max(1, insertIndex);
   lists.splice(insertIndex, 0, list);
+  markStandingListOrderUpdated();
   persistAndRender();
 }
 
@@ -3055,6 +3383,10 @@ function moveTask(sourceListId, taskId, targetListId, targetTaskId, position) {
 
   targetList.tasks.splice(insertIndex, 0, task);
   targetList.collapsed = false;
+  markTaskOrderUpdated(sourceList);
+  if (targetList.id !== sourceList.id) {
+    markTaskOrderUpdated(targetList);
+  }
   if (isEditingTask(sourceListId, taskId)) {
     editingTask = null;
   }
@@ -3139,9 +3471,13 @@ function rollTomorrowQueueIntoToday(options = {}) {
   lists = ensureTodayList(lists);
   const todayList = lists.find(isTodayList);
   if (!todayList) return;
+  todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
 
   dueItems.forEach((item) => {
     const taskId = getRolledTomorrowTaskId(item);
+    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
+      return;
+    }
     if (todayList.tasks.some((task) => task.id === taskId)) return;
 
     todayList.tasks.push(createTask(item.title, {
@@ -3189,6 +3525,8 @@ function ensureTodayList(rawLists) {
         ? list.completedArchiveText
         : todayList.completedArchiveText;
       todayList.lastTodayDateKey = list.lastTodayDateKey || todayList.lastTodayDateKey;
+      todayList.updatedAt = getLatestDateValue(todayList.updatedAt, list.updatedAt) || todayList.updatedAt;
+      todayList.deletedTaskTombstones = mergeTaskTombstones(todayList.deletedTaskTombstones, list.deletedTaskTombstones);
       todayList.tasks.push(...list.tasks);
       return;
     }
@@ -3199,6 +3537,7 @@ function ensureTodayList(rawLists) {
     });
   });
 
+  todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
   return [todayList, ...regularLists];
 }
 
@@ -3208,6 +3547,7 @@ function archiveCompletedTodayTasks(archiveDateKey) {
 
   const completedTasks = todayList.tasks.filter((task) => task.completed);
   if (completedTasks.length === 0) return false;
+  const archivedAt = new Date().toISOString();
 
   const archiveBlock = [
     formatArchiveDate(archiveDateKey),
@@ -3216,6 +3556,7 @@ function archiveCompletedTodayTasks(archiveDateKey) {
   ].join("\n");
 
   completedArchiveText = appendArchiveText(completedArchiveText, archiveBlock);
+  completedTasks.forEach((task) => rememberPrivateTaskDeletion(todayList, task, archivedAt));
   todayList.tasks = todayList.tasks.filter((task) => !task.completed);
   return true;
 }
