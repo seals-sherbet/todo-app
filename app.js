@@ -12,7 +12,7 @@ const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const deletedTaskTitle = "__tasks_deleted__";
 const todayListId = "pinned-today";
 const todayListType = "today";
-const projectListName = "Project";
+const projectListName = "Projects";
 const projectListType = "project";
 const completedPreviewLimit = 2;
 const syncDebounceMs = 700;
@@ -21,7 +21,9 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v1.01";
+const pullToSyncStartZone = 140;
+const pullToSyncThreshold = 70;
+const appVersion = "0.1.0";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -76,7 +78,9 @@ const taskBoards = [todayBoard, listBoard, projectBoard].filter(Boolean);
 const filterLabels = {
   all: "All",
   active: "Open",
-  completed: "Done"
+  completed: "Completed",
+  shared: "Shared",
+  private: "Private"
 };
 
 let completedArchiveText = loadCompletedArchiveText();
@@ -120,6 +124,8 @@ let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
 let undoAction = null;
 let undoTimer = null;
+let pullToSyncState = null;
+let pullToSyncRefreshing = false;
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
 if (todayLabel) todayLabel.textContent = todayText;
@@ -141,6 +147,10 @@ if ("ResizeObserver" in window) {
 window.addEventListener("resize", updateTomorrowFooterSpace);
 window.addEventListener("online", () => updateSyncUi());
 window.addEventListener("offline", () => updateSyncUi());
+window.addEventListener("touchstart", handlePullToSyncStart, { passive: true });
+window.addEventListener("touchmove", handlePullToSyncMove, { passive: true });
+window.addEventListener("touchend", handlePullToSyncEnd);
+window.addEventListener("touchcancel", resetPullToSync);
 
 listForm.addEventListener("submit", (event) => {
   event.preventDefault();
@@ -360,7 +370,7 @@ async function handleTaskBoardClick(event) {
   }
 
   if (button.dataset.action === "share-list") {
-    if (isTodayList(list)) return;
+    if (!canShareList(list)) return;
     openMenu = null;
     render();
     await shareListByEmail(list);
@@ -832,7 +842,7 @@ function closeSyncAuthDialog() {
 
 function showSyncEmailStep(message = "") {
   syncAuthTitle.textContent = "Sign in to sync";
-  syncAuthCopy.textContent = "Enter your email and we will send a 6-digit code.";
+  syncAuthCopy.textContent = "Enter your email and we will send an 8-digit code.";
   syncEmailForm.hidden = false;
   syncCodeForm.hidden = true;
   setSyncAuthMessage(message);
@@ -841,7 +851,7 @@ function showSyncEmailStep(message = "") {
 
 function showSyncCodeStep(message = "") {
   syncAuthTitle.textContent = "Enter code";
-  syncAuthCopy.textContent = "Use the 6-digit code from your email.";
+  syncAuthCopy.textContent = "Use the 8-digit code from your email.";
   syncEmailForm.hidden = true;
   syncCodeForm.hidden = false;
   syncCodeInput.value = "";
@@ -1075,6 +1085,52 @@ async function refreshSyncNow() {
 
   updateSyncUi("Checking sync...");
   await loadRemoteState();
+}
+
+function handlePullToSyncStart(event) {
+  if (!canStartPullToSync(event)) return;
+
+  pullToSyncState = {
+    startY: event.touches[0].clientY,
+    ready: false
+  };
+}
+
+function handlePullToSyncMove(event) {
+  if (!pullToSyncState || event.touches.length !== 1) return;
+
+  const distance = event.touches[0].clientY - pullToSyncState.startY;
+  if (distance < 0 || window.scrollY > 2) {
+    resetPullToSync();
+    return;
+  }
+
+  pullToSyncState.ready = distance >= pullToSyncThreshold;
+}
+
+async function handlePullToSyncEnd() {
+  const shouldRefresh = Boolean(pullToSyncState?.ready);
+  resetPullToSync();
+  if (!shouldRefresh || pullToSyncRefreshing) return;
+
+  pullToSyncRefreshing = true;
+  try {
+    await refreshSyncNow();
+  } finally {
+    pullToSyncRefreshing = false;
+  }
+}
+
+function resetPullToSync() {
+  pullToSyncState = null;
+}
+
+function canStartPullToSync(event) {
+  if (!navigator.maxTouchPoints || pullToSyncRefreshing || window.scrollY > 2) return false;
+  if (event.touches.length !== 1) return false;
+  if (event.touches[0].clientY > pullToSyncStartZone) return false;
+  if (event.target.closest("button, input, select, textarea, [contenteditable='true'], .handle-menu")) return false;
+  return true;
 }
 
 function queueRemoteSync(options = {}) {
@@ -2026,6 +2082,8 @@ function shouldShowList(list) {
   if (isTodayList(list)) return true;
   if (isProjectList(list)) return true;
   if (filter === "all") return true;
+  if (filter === "shared") return isSharedList(list);
+  if (filter === "private") return !isSharedList(list);
   const groups = getTaskGroups(list);
   return groups.openTasks.length > 0 || groups.completedTasks.length > 0;
 }
@@ -2380,6 +2438,7 @@ function createCompletedSection(list, taskGroups) {
 function shouldShowInlineEmpty(list, taskGroups) {
   if (filter === "active") return list.tasks.length === 0 || list.tasks.some((task) => task.completed);
   if (filter === "completed") return taskGroups.completedTasks.length === 0;
+  if (filter === "shared" || filter === "private") return list.tasks.length === 0;
   return list.tasks.length === 0;
 }
 
@@ -2422,8 +2481,6 @@ function createListMenu(list) {
     if (canManageList(list)) {
       menu.append(createMenuButton("Delete", "delete-list", `Delete ${list.name}`, false, true));
     }
-  } else if (canShareList(list)) {
-    menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
   }
 
   return menu;
@@ -3437,7 +3494,7 @@ function canEditList(list) {
 }
 
 function canShareList(list) {
-  return !isTodayList(list) && canManageList(list);
+  return !isPinnedList(list) && canManageList(list);
 }
 
 function isSharedList(list) {
@@ -3860,10 +3917,7 @@ function ensureTodayList(rawLists) {
       type: list.type === todayListType ? "standard" : list.type
     };
     if (isProjectListCandidate(regularList)) {
-      projectLists.push({
-        ...regularList,
-        type: projectListType
-      });
+      projectLists.push(normalizeProjectList(regularList));
       return;
     }
 
@@ -3881,17 +3935,25 @@ function ensureProjectLists(projectLists = []) {
 
   const targetId = getProjectListId();
   const targetProject = projectLists.find((list) => list.id === targetId);
-  if (targetProject) return projectLists;
+  if (targetProject) {
+    const normalizedProject = normalizeProjectList(targetProject);
+    if (targetProject.name !== projectListName || targetProject.shared || targetProject.memberRole) {
+      markListUpdated(normalizedProject);
+    }
+    return [normalizedProject];
+  }
 
   const migratableProject = syncUser
     ? projectLists.find((list) => canManageList(list) && String(list.id || "").startsWith("pinned-project-"))
     : null;
-  if (!migratableProject) return projectLists;
+  if (!migratableProject) return [createProjectList()];
 
-  migratableProject.id = targetId;
-  migratableProject.ownerId = syncUser.id;
-  markListUpdated(migratableProject);
-  return projectLists;
+  const normalizedProject = normalizeProjectList(migratableProject, {
+    id: targetId,
+    ownerId: syncUser.id
+  });
+  markListUpdated(normalizedProject);
+  return [normalizedProject];
 }
 
 function createProjectList() {
@@ -3900,6 +3962,17 @@ function createProjectList() {
     type: projectListType,
     ownerId: getActiveUserId()
   });
+}
+
+function normalizeProjectList(list, overrides = {}) {
+  return {
+    ...list,
+    ...overrides,
+    name: projectListName,
+    type: projectListType,
+    shared: false,
+    memberRole: ""
+  };
 }
 
 function getProjectListId() {
@@ -3970,7 +4043,8 @@ function isProjectList(list) {
 }
 
 function isProjectListCandidate(list) {
-  return isProjectList(list) || list?.name?.trim().toLowerCase() === projectListName.toLowerCase();
+  const normalizedName = list?.name?.trim().toLowerCase();
+  return isProjectList(list) || normalizedName === projectListName.toLowerCase() || normalizedName === "project";
 }
 
 function isPinnedList(list) {

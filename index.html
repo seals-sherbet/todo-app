@@ -56,7 +56,9 @@
           <div class="filter-menu" id="filterMenu" role="menu" aria-label="Filter tasks" hidden>
             <button class="menu-link filter-menu-item is-active" type="button" data-filter="all" role="menuitemradio" aria-checked="true">All</button>
             <button class="menu-link filter-menu-item" type="button" data-filter="active" role="menuitemradio" aria-checked="false">Open</button>
-            <button class="menu-link filter-menu-item" type="button" data-filter="completed" role="menuitemradio" aria-checked="false">Done</button>
+            <button class="menu-link filter-menu-item" type="button" data-filter="completed" role="menuitemradio" aria-checked="false">Completed</button>
+            <button class="menu-link filter-menu-item" type="button" data-filter="shared" role="menuitemradio" aria-checked="false">Shared</button>
+            <button class="menu-link filter-menu-item" type="button" data-filter="private" role="menuitemradio" aria-checked="false">Private</button>
           </div>
         </div>
       </section>
@@ -78,7 +80,7 @@
         </form>
       </section>
 
-      <section class="project-section" aria-label="Project list">
+      <section class="project-section" aria-label="Projects list">
         <ul id="projectBoard" class="list-board project-board"></ul>
       </section>
 
@@ -103,7 +105,7 @@
           <h2 id="syncAuthTitle">Sign in to sync</h2>
           <button class="sync-auth-close" id="syncAuthClose" type="button">Close</button>
         </div>
-        <p class="sync-auth-copy" id="syncAuthCopy">Enter your email and we will send a 6-digit code.</p>
+        <p class="sync-auth-copy" id="syncAuthCopy">Enter your email and we will send an 8-digit code.</p>
         <form class="sync-auth-form" id="syncEmailForm" autocomplete="on">
           <label class="field">
             <span>Email</span>

@@ -87,6 +87,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+  overscroll-behavior-y: contain;
 }
 
 body.has-modal {
@@ -1111,6 +1112,11 @@ button:focus-visible {
   top: 27px;
 }
 
+.standing-list.is-project-pinned .handle-menu {
+  top: auto;
+  bottom: 27px;
+}
+
 .menu-link {
   min-height: 24px;
   width: 100%;
@@ -1504,5 +1510,10 @@ button:focus-visible {
   .task-row .handle-menu {
     left: 22px;
     top: 27px;
+  }
+
+  .standing-list.is-project-pinned .handle-menu {
+    top: auto;
+    bottom: 27px;
   }
 }
