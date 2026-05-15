@@ -261,12 +261,15 @@ h1 {
 
 .archive-card {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   width: min(420px, 100%);
-  max-height: min(72vh, 640px);
+  height: min(72dvh, 640px);
+  max-height: calc(100dvh - 36px);
   border: 2px solid var(--list-border);
   border-radius: 18px;
   background: var(--list-card);
   box-shadow: 0 18px 42px rgba(52, 55, 93, 0.18);
+  overflow: hidden;
   padding: 16px;
 }
 
@@ -297,10 +300,14 @@ h1 {
 
 .archive-content {
   display: grid;
+  align-content: start;
   gap: 12px;
-  margin-top: 14px;
+  min-height: 0;
+  margin: 14px 0;
   overflow-y: auto;
-  padding-right: 2px;
+  overscroll-behavior: contain;
+  padding: 0 2px 2px 0;
+  scrollbar-gutter: stable;
 }
 
 .archive-day {
@@ -337,7 +344,6 @@ h1 {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-  margin-top: 14px;
 }
 
 .sync-auth-header {
