@@ -5,6 +5,7 @@ const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
 const listCollapseKey = "tasks.listCollapse.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
+const syncUserStorageKey = "tasks.syncUserId.v1";
 const completedArchiveKey = "tasks.completedArchive.v1";
 const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
@@ -20,7 +21,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.99";
+const appVersion = "v1.00";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -725,18 +726,21 @@ function persistAndRender(options = {}) {
 function persistLocalListsOnly() {
   lists = applyArchiveMetadataToLists(ensureTodayList(lists));
   localStorage.setItem(storageKey, JSON.stringify(lists));
+  rememberLocalTaskStateUser();
   persistArchiveState();
 }
 
 function persistLists(options = {}) {
   lists = applyArchiveMetadataToLists(ensureTodayList(lists));
   localStorage.setItem(storageKey, JSON.stringify(lists));
+  rememberLocalTaskStateUser();
   persistArchiveState();
   queueRemoteSync(options);
 }
 
 function persistTomorrowQueue() {
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  rememberLocalTaskStateUser();
   queueRemoteSync({ syncShared: false });
 }
 
@@ -789,10 +793,19 @@ async function handleAuthSession(session) {
     return;
   }
 
+  if (syncUser?.id && syncUser.id !== nextUser.id) {
+    clearRemoteSubscription();
+  }
+
+  const localStateBelongsToUser = isLocalTaskStateForUser(nextUser.id);
+  if (!localStateBelongsToUser) {
+    resetInMemoryTaskStateForAccountBoundary();
+  }
+
   syncUser = nextUser;
   updateSyncUi("Loading sync...");
   await syncUserProfile();
-  await loadRemoteState();
+  await loadRemoteState({ trustLocalState: localStateBelongsToUser });
   subscribeToRemoteChanges();
 }
 
@@ -949,8 +962,9 @@ async function handleSyncCodeSubmit(event) {
   }, 250);
 }
 
-async function loadRemoteState() {
+async function loadRemoteState(options = {}) {
   if (!syncClient || !syncUser) return;
+  const trustLocalState = options.trustLocalState ?? isLocalTaskStateForUser(syncUser.id);
 
   const inviteResult = await claimPendingListInvites();
   if (inviteResult?.error) {
@@ -973,12 +987,12 @@ async function loadRemoteState() {
     return;
   }
 
-  const localStandingLists = getStandingLists(lists);
+  const localStandingLists = trustLocalState ? getStandingLists(lists) : [];
   const privateDocument = privateResult.data;
   const privateRemoteLists = Array.isArray(privateDocument?.lists)
     ? privateDocument.lists.map(normalizeList)
     : null;
-  const localPrivateLists = getPrivateLists(lists);
+  const localPrivateLists = trustLocalState ? getPrivateLists(lists) : [];
   const remotePrivateLists = privateRemoteLists
     ? ensureTodayList(privateRemoteLists).filter(isTodayList)
     : [];
@@ -989,8 +1003,10 @@ async function loadRemoteState() {
     ? normalizeTomorrowQueue(privateDocument.tomorrow_queue)
     : [];
   const mergedPrivateState = privateDocument
-    ? mergePrivateState(localPrivateLists, tomorrowQueue, remotePrivateLists, remoteTomorrowQueue)
-    : rollDueQueueIntoPrivateState(localPrivateLists, tomorrowQueue);
+    ? (trustLocalState
+      ? mergePrivateState(localPrivateLists, tomorrowQueue, remotePrivateLists, remoteTomorrowQueue)
+      : rollDueQueueIntoPrivateState(remotePrivateLists, remoteTomorrowQueue))
+    : rollDueQueueIntoPrivateState(localPrivateLists, trustLocalState ? tomorrowQueue : []);
   const privateLists = mergedPrivateState.lists;
   const nextTomorrowQueue = mergedPrivateState.tomorrowQueue;
 
@@ -1205,11 +1221,41 @@ function applyRemoteState(remoteState) {
 
   localStorage.setItem(storageKey, JSON.stringify(lists));
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  rememberLocalTaskStateUser();
+  persistDeletedSharedTasks();
   persistArchiveState();
   syncApplyingRemoteState = false;
 
   rollTomorrowQueueIntoToday();
   render();
+}
+
+function isLocalTaskStateForUser(userId) {
+  return Boolean(userId) && localStorage.getItem(syncUserStorageKey) === userId;
+}
+
+function rememberLocalTaskStateUser() {
+  if (syncUser?.id) {
+    localStorage.setItem(syncUserStorageKey, syncUser.id);
+  }
+}
+
+function resetInMemoryTaskStateForAccountBoundary() {
+  completedArchiveText = "";
+  deletedSharedTasks = [];
+  lastTodayDateKey = getDateKey();
+  lists = [];
+  tomorrowQueue = [];
+  expandedCompletedLists.clear();
+  activeTaskFormListId = null;
+  editingListId = null;
+  editingTask = null;
+  openMenu = null;
+  taskFormDrafts.clear();
+  syncLastRemoteUpdatedAt = "";
+  syncPendingAllShared = false;
+  syncPendingSharedListIds.clear();
+  syncPendingTaskOrderListIds.clear();
 }
 
 async function fetchPrivateDocument() {
@@ -1337,6 +1383,7 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
     tomorrowQueue = mergedState.tomorrowQueue;
     localStorage.setItem(storageKey, JSON.stringify(lists));
     localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+    rememberLocalTaskStateUser();
     persistArchiveState();
   }
 
