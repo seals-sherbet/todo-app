@@ -23,7 +23,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.1";
+const appVersion = "0.1.2";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -2125,7 +2125,7 @@ function getCompletedTime(task) {
 }
 
 function createListScopeLabel(list) {
-  if (isTodayList(list)) return null;
+  if (isPinnedList(list)) return null;
 
   const label = document.createElement("span");
   const shared = isSharedList(list);
@@ -2200,7 +2200,9 @@ function createListElement(list) {
 
   const progressText = document.createElement("span");
   progressText.className = "list-progress-text";
-  progressText.textContent = formatProgressText(doneTasks, list.tasks.length);
+  progressText.textContent = isProjectList(list)
+    ? formatProjectProgressText(openTasks)
+    : formatProgressText(doneTasks, list.tasks.length);
 
   header.append(dragHandle, titleControl, progressText);
 
@@ -2402,6 +2404,10 @@ function createOption(value, label) {
 
 function formatProgressText(doneTasks, totalTasks) {
   return totalTasks > 0 ? `${doneTasks}/${totalTasks} completed` : "0 completed";
+}
+
+function formatProjectProgressText(openTasks) {
+  return `${openTasks} open`;
 }
 
 function createInlineEmpty(text) {
