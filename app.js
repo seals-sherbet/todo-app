@@ -23,7 +23,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.0";
+const appVersion = "0.1.1";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
