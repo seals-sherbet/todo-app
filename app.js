@@ -11,6 +11,8 @@ const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const deletedTaskTitle = "__tasks_deleted__";
 const todayListId = "pinned-today";
 const todayListType = "today";
+const projectListName = "Project";
+const projectListType = "project";
 const completedPreviewLimit = 2;
 const syncDebounceMs = 700;
 const syncRefreshDebounceMs = 500;
@@ -18,12 +20,13 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.98";
+const appVersion = "v0.99";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
 const todayBoard = document.querySelector("#todayBoard");
 const listBoard = document.querySelector("#listBoard");
+const projectBoard = document.querySelector("#projectBoard");
 const emptyState = document.querySelector("#emptyState");
 const settingsMenuButton = document.querySelector("#settingsMenuButton");
 const settingsMenu = document.querySelector("#settingsMenu");
@@ -60,6 +63,7 @@ const todayLabel = document.querySelector("#todayLabel");
 const filterMenuButton = document.querySelector("#filterMenuButton");
 const filterMenu = document.querySelector("#filterMenu");
 const filterMenuLabel = document.querySelector("#filterMenuLabel");
+const projectSection = document.querySelector(".project-section");
 const tomorrowSection = document.querySelector(".tomorrow-section");
 const tomorrowToggle = document.querySelector("#tomorrowToggle");
 const tomorrowBody = document.querySelector("#tomorrowBody");
@@ -67,7 +71,7 @@ const tomorrowCount = document.querySelector("#tomorrowCount");
 const tomorrowList = document.querySelector("#tomorrowList");
 const tomorrowForm = document.querySelector("#tomorrowForm");
 const tomorrowInput = document.querySelector("#tomorrowInput");
-const taskBoards = [todayBoard, listBoard].filter(Boolean);
+const taskBoards = [todayBoard, listBoard, projectBoard].filter(Boolean);
 const filterLabels = {
   all: "All",
   active: "Open",
@@ -78,6 +82,8 @@ let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
 let listCollapsePrefs = loadListCollapsePrefs();
 let lastTodayDateKey = localStorage.getItem(todayDateKeyStorageKey) || getDateKey();
+const syncDeviceId = getOrCreateDeviceId();
+let syncUser = null;
 let lists = loadLists();
 hydrateArchiveStateFromLists(lists);
 lists = applyArchiveMetadataToLists(lists);
@@ -99,7 +105,6 @@ let suppressHandleClick = false;
 let todayText = formatTodayDate();
 let rolloverTimer = null;
 let syncClient = null;
-let syncUser = null;
 let syncChannel = null;
 let syncPushTimer = null;
 let syncRefreshTimer = null;
@@ -114,7 +119,6 @@ let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
 let undoAction = null;
 let undoTimer = null;
-const syncDeviceId = getOrCreateDeviceId();
 const syncConfig = window.TASKS_SYNC_CONFIG || {};
 
 if (todayLabel) todayLabel.textContent = todayText;
@@ -128,7 +132,9 @@ if (savedTheme) {
 }
 
 if ("ResizeObserver" in window) {
-  new ResizeObserver(updateTomorrowFooterSpace).observe(tomorrowSection);
+  const footerResizeObserver = new ResizeObserver(updateTomorrowFooterSpace);
+  if (tomorrowSection) footerResizeObserver.observe(tomorrowSection);
+  if (projectSection) footerResizeObserver.observe(projectSection);
 }
 
 window.addEventListener("resize", updateTomorrowFooterSpace);
@@ -342,7 +348,7 @@ async function handleTaskBoardClick(event) {
   }
 
   if (button.dataset.action === "edit-list") {
-    if (isTodayList(list)) return;
+    if (isPinnedList(list)) return;
     editingListId = list.id;
     editingTask = null;
     activeTaskFormListId = null;
@@ -361,7 +367,7 @@ async function handleTaskBoardClick(event) {
   }
 
   if (button.dataset.action === "delete-list") {
-    if (isTodayList(list)) return;
+    if (isPinnedList(list)) return;
     const hasTasks = list.tasks.length > 0;
     const shouldDelete = !hasTasks || askToConfirm(`Delete "${list.name}" and its tasks?`);
     if (!shouldDelete) return;
@@ -859,7 +865,7 @@ async function handleSyncButtonClick() {
     const shouldSignOut = askToConfirm("Sign out of synced tasks on this device?");
     if (!shouldSignOut) return;
     updateSyncUi("Signing out...");
-    await syncClient.auth.signOut();
+    await syncClient.auth.signOut({ scope: "local" });
     return;
   }
 
@@ -1800,15 +1806,18 @@ function rememberListCollapsed(listId, collapsed) {
 function render() {
   refreshTodayText();
   const todayList = lists.find(isTodayList);
-  const visibleLists = lists.filter((list) => !isTodayList(list) && shouldShowList(list));
+  const visibleLists = lists.filter((list) => !isTodayList(list) && !isProjectList(list) && shouldShowList(list));
+  const visibleProjectLists = lists.filter((list) => isProjectList(list) && shouldShowList(list));
 
   renderFilterMenu();
   renderSettingsMenu();
   renderTomorrowQueue();
-  emptyState.hidden = visibleLists.length > 0;
+  emptyState.hidden = visibleLists.length + visibleProjectLists.length > 0;
 
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
   listBoard.replaceChildren(...visibleLists.map(createListElement));
+  projectBoard.replaceChildren(...visibleProjectLists.map(createListElement));
+  updateTomorrowFooterSpace();
 }
 
 function renderFilterMenu() {
@@ -1968,6 +1977,7 @@ function createTomorrowQueueElement(entry) {
 
 function shouldShowList(list) {
   if (isTodayList(list)) return true;
+  if (isProjectList(list)) return true;
   if (filter === "all") return true;
   const groups = getTaskGroups(list);
   return groups.openTasks.length > 0 || groups.completedTasks.length > 0;
@@ -2030,6 +2040,9 @@ function createListElement(list) {
   if (isTodayList(list)) {
     item.classList.add("is-pinned");
   }
+  if (isProjectList(list)) {
+    item.classList.add("is-project-pinned");
+  }
   if (openMenu?.listId === list.id) {
     item.classList.add("has-open-menu");
   }
@@ -2038,9 +2051,9 @@ function createListElement(list) {
   const header = document.createElement("div");
   header.className = "list-header";
 
-  const dragHandle = createDragHandle("list", isTodayList(list) ? "Today options" : `Drag ${list.name}`, {
-    draggable: !isTodayList(list),
-    fixed: isTodayList(list),
+  const dragHandle = createDragHandle("list", isPinnedList(list) ? `${list.name} options` : `Drag ${list.name}`, {
+    draggable: !isPinnedList(list),
+    fixed: isPinnedList(list),
     open: isMenuOpen("list", list.id)
   });
 
@@ -2050,7 +2063,7 @@ function createListElement(list) {
   chevron.textContent = list.collapsed ? "+" : "-";
 
   let titleControl;
-  if (editingListId === list.id && !isTodayList(list)) {
+  if (editingListId === list.id && !isPinnedList(list)) {
     titleControl = createListRenameForm(list);
   } else {
     const toggle = document.createElement("button");
@@ -2354,7 +2367,7 @@ function createListMenu(list) {
   menu.setAttribute("role", "menu");
 
   menu.append(createMenuButton("Details", "toggle-fields", list.showDetails ? `Hide details for ${list.name}` : `Show details for ${list.name}`, list.showDetails));
-  if (!isTodayList(list)) {
+  if (!isPinnedList(list)) {
     if (canShareList(list)) {
       menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
     }
@@ -2362,6 +2375,8 @@ function createListMenu(list) {
     if (canManageList(list)) {
       menu.append(createMenuButton("Delete", "delete-list", `Delete ${list.name}`, false, true));
     }
+  } else if (canShareList(list)) {
+    menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
   }
 
   return menu;
@@ -2446,7 +2461,7 @@ function isMenuOpen(type, listId, taskId = null) {
 
 function finishListRename(form) {
   const list = findList(form?.dataset.listId);
-  if (!list || isTodayList(list) || editingListId !== list.id) return;
+  if (!list || isPinnedList(list) || editingListId !== list.id) return;
 
   const nextName = form.elements.name.value.trim();
   if (nextName) {
@@ -3472,7 +3487,7 @@ function handleDragPointerDown(event) {
   if (!list) return;
 
   const type = handle.dataset.dragType;
-  if (type === "list" && isTodayList(list)) return;
+  if (type === "list" && isPinnedList(list)) return;
 
   const taskElement = handle.closest("[data-task-id]");
   if (type === "task" && !taskElement) return;
@@ -3558,6 +3573,8 @@ function updateListDragTarget(element, y) {
   let position = y > box.top + box.height / 2 ? "after" : "before";
   if (isTodayList(targetList)) {
     position = "after";
+  } else if (isProjectList(targetList)) {
+    position = "before";
   }
 
   targetElement.classList.add(position === "before" ? "is-drag-over-before" : "is-drag-over-after");
@@ -3594,7 +3611,7 @@ function moveList(sourceListId, targetListId, position) {
   if (sourceListId === targetListId) return;
 
   const sourceIndex = lists.findIndex((list) => list.id === sourceListId);
-  if (sourceIndex < 0 || isTodayList(lists[sourceIndex])) return;
+  if (sourceIndex < 0 || isPinnedList(lists[sourceIndex])) return;
 
   const [list] = lists.splice(sourceIndex, 1);
   const targetIndex = lists.findIndex((item) => item.id === targetListId);
@@ -3771,6 +3788,7 @@ function ensureTodayList(rawLists) {
     type: todayListType
   });
   const regularLists = [];
+  const projectLists = [];
 
   rawLists.forEach((list) => {
     if (isTodayListCandidate(list)) {
@@ -3790,14 +3808,55 @@ function ensureTodayList(rawLists) {
       return;
     }
 
-    regularLists.push({
+    const regularList = {
       ...list,
       type: list.type === todayListType ? "standard" : list.type
-    });
+    };
+    if (isProjectListCandidate(regularList)) {
+      projectLists.push({
+        ...regularList,
+        type: projectListType
+      });
+      return;
+    }
+
+    regularLists.push(regularList);
   });
 
   todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
-  return [todayList, ...regularLists];
+  return [todayList, ...regularLists, ...ensureProjectLists(projectLists)];
+}
+
+function ensureProjectLists(projectLists = []) {
+  if (projectLists.length === 0) {
+    return [createProjectList()];
+  }
+
+  const targetId = getProjectListId();
+  const targetProject = projectLists.find((list) => list.id === targetId);
+  if (targetProject) return projectLists;
+
+  const migratableProject = syncUser
+    ? projectLists.find((list) => canManageList(list) && String(list.id || "").startsWith("pinned-project-"))
+    : null;
+  if (!migratableProject) return projectLists;
+
+  migratableProject.id = targetId;
+  migratableProject.ownerId = syncUser.id;
+  markListUpdated(migratableProject);
+  return projectLists;
+}
+
+function createProjectList() {
+  return createList(projectListName, true, [], {
+    id: getProjectListId(),
+    type: projectListType,
+    ownerId: getActiveUserId()
+  });
+}
+
+function getProjectListId() {
+  return `pinned-project-${getActiveUserId() || syncDeviceId}`;
 }
 
 function archiveCompletedTodayTasks(archiveDateKey) {
@@ -3859,6 +3918,18 @@ function isTodayList(list) {
   return list?.id === todayListId || list?.type === todayListType;
 }
 
+function isProjectList(list) {
+  return list?.type === projectListType;
+}
+
+function isProjectListCandidate(list) {
+  return isProjectList(list) || list?.name?.trim().toLowerCase() === projectListName.toLowerCase();
+}
+
+function isPinnedList(list) {
+  return isTodayList(list) || isProjectList(list);
+}
+
 function isTodayListCandidate(list) {
   return isTodayList(list) || list?.name?.trim().toLowerCase() === "today";
 }
@@ -3874,7 +3945,9 @@ function refreshTodayText() {
 function updateTomorrowFooterSpace() {
   window.requestAnimationFrame(() => {
     const footerHeight = tomorrowSection?.getBoundingClientRect().height || 0;
+    const projectHeight = projectSection?.getBoundingClientRect().height || 0;
     document.documentElement.style.setProperty("--tomorrow-footer-space", `${footerHeight + 18}px`);
+    document.documentElement.style.setProperty("--project-footer-space", `${projectHeight ? projectHeight + 10 : 0}px`);
   });
 }
 

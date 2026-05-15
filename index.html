@@ -22,7 +22,6 @@
               Menu
             </button>
             <div class="settings-menu" id="settingsMenu" role="menu" aria-label="App menu" hidden>
-              <button class="menu-link settings-menu-item sync-button" id="syncButton" type="button" role="menuitem">Sync</button>
               <button class="menu-link settings-menu-item sync-error-button is-danger" id="syncErrorButton" type="button" role="menuitem" hidden>Details</button>
               <button class="menu-link settings-menu-item" id="refreshSyncButton" type="button" role="menuitem">Refresh Sync</button>
               <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
@@ -34,6 +33,7 @@
                 <span>Version</span>
                 <span id="appVersion"></span>
               </div>
+              <button class="menu-link settings-menu-item sync-button" id="syncButton" type="button" role="menuitem">Sync</button>
             </div>
           </div>
           <div class="sync-control" aria-live="polite">
@@ -76,6 +76,10 @@
           </label>
           <button class="primary-button" type="submit">Add List</button>
         </form>
+      </section>
+
+      <section class="project-section" aria-label="Project list">
+        <ul id="projectBoard" class="list-board project-board"></ul>
       </section>
 
       <section class="tomorrow-section" aria-label="Tomorrow queue">
