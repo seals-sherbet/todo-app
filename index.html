@@ -24,12 +24,16 @@
             <div class="settings-menu" id="settingsMenu" role="menu" aria-label="App menu" hidden>
               <button class="menu-link settings-menu-item sync-error-button is-danger" id="syncErrorButton" type="button" role="menuitem" hidden>Details</button>
               <button class="menu-link settings-menu-item" id="refreshSyncButton" type="button" role="menuitem">Refresh Sync</button>
-              <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
               <button class="menu-link settings-menu-item" id="updateAppButton" type="button" role="menuitem">Update App</button>
               <button class="menu-link settings-menu-item" id="viewArchiveButton" type="button" role="menuitem">View Archive</button>
               <button class="menu-link settings-menu-item" id="copyArchiveButton" type="button" role="menuitem">Copy Archive</button>
               <button class="menu-link settings-menu-item" id="downloadArchiveButton" type="button" role="menuitem">Download Archive</button>
-              <div class="settings-version" role="presentation">
+              <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
+              <div class="settings-detail" role="presentation">
+                <span>Last synced</span>
+                <span id="lastSyncedAt">Never</span>
+              </div>
+              <div class="settings-detail settings-version" role="presentation">
                 <span>Version</span>
                 <span id="appVersion"></span>
               </div>

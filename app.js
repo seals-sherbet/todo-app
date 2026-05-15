@@ -9,6 +9,7 @@ const syncUserStorageKey = "tasks.syncUserId.v1";
 const completedArchiveKey = "tasks.completedArchive.v1";
 const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
+const syncLastSuccessKey = "tasks.lastSyncSuccess.v1";
 const deletedTaskTitle = "__tasks_deleted__";
 const todayListId = "pinned-today";
 const todayListType = "today";
@@ -23,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.2";
+const appVersion = "0.1.3";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -34,6 +35,7 @@ const emptyState = document.querySelector("#emptyState");
 const settingsMenuButton = document.querySelector("#settingsMenuButton");
 const settingsMenu = document.querySelector("#settingsMenu");
 const appVersionLabel = document.querySelector("#appVersion");
+const lastSyncedAtLabel = document.querySelector("#lastSyncedAt");
 const themeToggle = document.querySelector("#themeToggle");
 const updateAppButton = document.querySelector("#updateAppButton");
 const viewArchiveButton = document.querySelector("#viewArchiveButton");
@@ -115,6 +117,7 @@ let syncPushTimer = null;
 let syncRefreshTimer = null;
 let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
+let syncLastSuccessAt = localStorage.getItem(syncLastSuccessKey) || "";
 let syncSkipRemoteRefreshUntil = 0;
 let syncDialogOpen = false;
 let syncPendingAllShared = false;
@@ -161,7 +164,7 @@ listForm.addEventListener("submit", (event) => {
   const list = createList(name, false, [], {
     ownerId: getActiveUserId()
   });
-  lists = ensureTodayList([list, ...lists]);
+  lists = ensureTodayList([...lists, list]);
   markSharedListOrderUpdated();
   listForm.reset();
   listName.focus();
@@ -1058,6 +1061,7 @@ async function loadRemoteState(options = {}) {
     tomorrowQueue: nextTomorrowQueue,
     updatedAt: privateDocument?.updated_at || new Date().toISOString()
   });
+  markSyncSuccess();
   updateSyncUi("Synced");
 }
 
@@ -1193,6 +1197,7 @@ async function pushRemoteState() {
 
   clearPendingSharedSync();
   syncLastRemoteUpdatedAt = updatedAt;
+  markSyncSuccess();
   updateSyncUi("Synced");
 }
 
@@ -1950,6 +1955,26 @@ function renderSettingsMenu() {
   downloadArchiveButton.disabled = !hasArchive;
 
   if (appVersionLabel) appVersionLabel.textContent = appVersion;
+  if (lastSyncedAtLabel) lastSyncedAtLabel.textContent = formatLastSyncedText();
+}
+
+function markSyncSuccess() {
+  syncLastSuccessAt = new Date().toISOString();
+  localStorage.setItem(syncLastSuccessKey, syncLastSuccessAt);
+  if (lastSyncedAtLabel) lastSyncedAtLabel.textContent = formatLastSyncedText();
+}
+
+function formatLastSyncedText() {
+  if (!isSupabaseConfigured()) return "Local only";
+  if (!syncUser) return "Not syncing";
+  if (!syncLastSuccessAt) return "Never";
+
+  const date = new Date(syncLastSuccessAt);
+  if (Number.isNaN(date.getTime())) return "Never";
+  return date.toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 function openArchiveDialog() {
