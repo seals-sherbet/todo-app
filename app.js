@@ -18,7 +18,7 @@ const syncDialogPauseMs = 5000;
 const syncLocalWritePauseMs = 3500;
 const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
-const appVersion = "v0.97";
+const appVersion = "v0.98";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -1765,7 +1765,7 @@ function loadTomorrowQueue() {
 }
 
 function loadCompletedArchiveText() {
-  return localStorage.getItem(completedArchiveKey) || "";
+  return mergeArchiveText(localStorage.getItem(completedArchiveKey) || "");
 }
 
 function loadListCollapsePrefs() {
@@ -3198,23 +3198,102 @@ function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], nextLists = 
 }
 
 function mergeArchiveText(...texts) {
-  const blocks = [];
-  const seen = new Set();
+  return serializeArchiveEntries(mergeArchiveEntries(texts.flatMap(getArchiveEntriesFromText)));
+}
 
-  texts.forEach((text) => {
-    String(text || "")
-      .trim()
-      .split(/\n{2,}/)
-      .map((block) => block.trim())
-      .filter(Boolean)
-      .forEach((block) => {
-        if (seen.has(block)) return;
-        seen.add(block);
-        blocks.push(block);
+function mergeArchiveEntries(entries = []) {
+  const buckets = new Map();
+
+  entries.forEach((entry) => {
+    const date = String(entry.date || "Archived tasks").trim() || "Archived tasks";
+    const key = getArchiveDateKeyFromLabel(date);
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        date,
+        items: [],
+        itemKeys: new Set(),
+        order: buckets.size,
+        sortTime: getArchiveSortTime(date)
       });
+    }
+
+    const bucket = buckets.get(key);
+    entry.items.map(normalizeArchiveItemTitle).filter(Boolean).forEach((item) => {
+      const itemKey = item.toLocaleLowerCase();
+      if (bucket.itemKeys.has(itemKey)) return;
+      bucket.itemKeys.add(itemKey);
+      bucket.items.push(item);
+    });
   });
 
-  return blocks.join("\n\n");
+  return [...buckets.values()]
+    .filter((entry) => entry.items.length > 0)
+    .sort(compareArchiveEntries)
+    .map(({ date, items }) => ({ date, items }));
+}
+
+function serializeArchiveEntries(entries = []) {
+  return entries
+    .map((entry) => [
+      entry.date,
+      ...entry.items.map((item) => `- ${item}`)
+    ].join("\n"))
+    .join("\n\n");
+}
+
+function getArchiveEntriesFromText(text = "") {
+  return String(text || "")
+    .trim()
+    .split(/\n{2,}/)
+    .map((block) => block.trim())
+    .filter(Boolean)
+    .map((block) => {
+      const [date, ...taskLines] = block.split("\n").map((line) => line.trim()).filter(Boolean);
+      return {
+        date: date || "Archived tasks",
+        items: taskLines.map(normalizeArchiveItemTitle).filter(Boolean)
+      };
+    })
+    .filter((entry) => entry.items.length > 0);
+}
+
+function normalizeArchiveItemTitle(item) {
+  return String(item || "").replace(/^-\s*/, "").trim();
+}
+
+function getArchiveDateKeyFromLabel(dateLabel) {
+  const parsedDate = parseArchiveDateLabel(dateLabel);
+  return parsedDate ? getDateKey(parsedDate) : String(dateLabel || "Archived tasks").trim().toLocaleLowerCase();
+}
+
+function getArchiveSortTime(dateLabel) {
+  const parsedDate = parseArchiveDateLabel(dateLabel);
+  return parsedDate ? parsedDate.getTime() : Number.POSITIVE_INFINITY;
+}
+
+function parseArchiveDateLabel(dateLabel) {
+  const label = String(dateLabel || "").trim();
+  if (!label) return null;
+
+  const withoutWeekday = label.replace(/^[^,]+,\s*/, "");
+  const timestamp = Date.parse(label);
+  const fallbackTimestamp = Date.parse(withoutWeekday);
+  const time = Number.isNaN(timestamp) ? fallbackTimestamp : timestamp;
+  if (Number.isNaN(time)) return null;
+
+  const date = new Date(time);
+  if (Number.isNaN(date.getTime())) return null;
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+}
+
+function compareArchiveEntries(first, second) {
+  const firstHasDate = Number.isFinite(first.sortTime);
+  const secondHasDate = Number.isFinite(second.sortTime);
+  if (firstHasDate && secondHasDate && first.sortTime !== second.sortTime) {
+    return first.sortTime - second.sortTime;
+  }
+  if (firstHasDate !== secondHasDate) return firstHasDate ? -1 : 1;
+  return first.order - second.order;
 }
 
 function getEarliestDateValue(...values) {
@@ -3742,8 +3821,7 @@ function archiveCompletedTodayTasks(archiveDateKey) {
 }
 
 function appendArchiveText(existingText, nextBlock) {
-  const trimmedExisting = existingText.trimEnd();
-  return trimmedExisting ? `${trimmedExisting}\n\n${nextBlock}` : `${nextBlock}`;
+  return mergeArchiveText(existingText, nextBlock);
 }
 
 function hydrateArchiveStateFromLists(sourceLists) {
@@ -3751,7 +3829,7 @@ function hydrateArchiveStateFromLists(sourceLists) {
   if (!todayList) return;
 
   if (typeof todayList.completedArchiveText === "string" && todayList.completedArchiveText.trim()) {
-    completedArchiveText = todayList.completedArchiveText;
+    completedArchiveText = mergeArchiveText(completedArchiveText, todayList.completedArchiveText);
   }
 
   if (todayList.lastTodayDateKey) {
@@ -3772,6 +3850,7 @@ function applyArchiveMetadataToLists(sourceLists) {
 }
 
 function persistArchiveState() {
+  completedArchiveText = mergeArchiveText(completedArchiveText);
   localStorage.setItem(completedArchiveKey, completedArchiveText);
   localStorage.setItem(todayDateKeyStorageKey, lastTodayDateKey);
 }
@@ -3822,22 +3901,11 @@ function formatArchiveDate(dateKey) {
 }
 
 function getCompletedArchiveExportText() {
-  return completedArchiveText.trimEnd();
+  return mergeArchiveText(completedArchiveText).trimEnd();
 }
 
 function getArchiveEntries() {
-  return getCompletedArchiveExportText()
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => {
-      const [date, ...taskLines] = block.split("\n").map((line) => line.trim()).filter(Boolean);
-      return {
-        date: date || "Archived tasks",
-        items: taskLines.map((line) => line.replace(/^-\s*/, "")).filter(Boolean)
-      };
-    })
-    .filter((entry) => entry.items.length > 0);
+  return mergeArchiveEntries(getArchiveEntriesFromText(completedArchiveText));
 }
 
 function getDateKey(date = new Date()) {
