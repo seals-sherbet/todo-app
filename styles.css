@@ -1131,6 +1131,14 @@ button:focus-visible {
   visibility: hidden;
 }
 
+.previous-completed-task-list {
+  margin-top: 6px;
+}
+
+.task-row.is-previous-complete {
+  opacity: 0.88;
+}
+
 .completed-toggle {
   min-height: 26px;
   border: 0;

@@ -15,7 +15,6 @@ const todayListId = "pinned-today";
 const todayListType = "today";
 const projectListName = "Projects";
 const projectListType = "project";
-const completedPreviewLimit = 2;
 const syncDebounceMs = 700;
 const syncRefreshDebounceMs = 500;
 const syncDialogPauseMs = 5000;
@@ -24,7 +23,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.3";
+const appVersion = "0.1.4";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -2116,28 +2115,50 @@ function shouldShowList(list) {
 function getTaskGroups(list) {
   const openTasks = list.tasks.filter((task) => !task.completed);
   const completedTasks = list.tasks.filter((task) => task.completed).sort(compareCompletedTasks);
+  const completedTodayTasks = completedTasks.filter(isTaskCompletedToday);
+  const previousCompletedTasks = completedTasks.filter((task) => !isTaskCompletedToday(task));
 
   if (filter === "active") {
     return {
       openTasks,
       completedTasks: [],
+      completedTodayTasks: [],
+      previousCompletedTasks: [],
       visibleCompletedTasks: [],
+      visiblePreviousCompletedTasks: [],
       hiddenCompletedCount: 0,
       isCompletedExpanded: false,
       showCompletedToggle: false
     };
   }
 
+  if (filter === "completed") {
+    return {
+      openTasks: [],
+      completedTasks,
+      completedTodayTasks,
+      previousCompletedTasks,
+      visibleCompletedTasks: completedTasks,
+      visiblePreviousCompletedTasks: [],
+      hiddenCompletedCount: 0,
+      isCompletedExpanded: true,
+      showCompletedToggle: false
+    };
+  }
+
   const showAllCompleted = filter === "completed" || expandedCompletedLists.has(list.id);
-  const visibleCompletedTasks = showAllCompleted ? completedTasks : completedTasks.slice(0, completedPreviewLimit);
+  const visiblePreviousCompletedTasks = showAllCompleted ? previousCompletedTasks : [];
 
   return {
-    openTasks: filter === "completed" ? [] : openTasks,
+    openTasks,
     completedTasks,
-    visibleCompletedTasks,
-    hiddenCompletedCount: Math.max(0, completedTasks.length - visibleCompletedTasks.length),
+    completedTodayTasks,
+    previousCompletedTasks,
+    visibleCompletedTasks: completedTodayTasks,
+    visiblePreviousCompletedTasks,
+    hiddenCompletedCount: showAllCompleted ? 0 : previousCompletedTasks.length,
     isCompletedExpanded: showAllCompleted,
-    showCompletedToggle: filter === "all" && completedTasks.length > completedPreviewLimit
+    showCompletedToggle: filter === "all" && previousCompletedTasks.length > 0
   };
 }
 
@@ -2163,7 +2184,6 @@ function createListElement(list) {
   const item = document.createElement("li");
   const taskGroups = getTaskGroups(list);
   const openTasks = list.tasks.filter((task) => !task.completed).length;
-  const doneTasks = list.tasks.length - openTasks;
   const bodyId = `list-body-${list.id}`;
 
   item.className = `standing-list${list.collapsed ? " is-collapsed" : ""}`;
@@ -2227,7 +2247,7 @@ function createListElement(list) {
   progressText.className = "list-progress-text";
   progressText.textContent = isProjectList(list)
     ? formatProjectProgressText(openTasks)
-    : formatProgressText(doneTasks, list.tasks.length);
+    : formatDailyProgressText(list);
 
   header.append(dragHandle, titleControl, progressText);
 
@@ -2246,7 +2266,7 @@ function createListElement(list) {
     body.append(createInlineEmpty(getInlineEmptyText(list, taskGroups)));
   }
   body.append(createTaskForm(list));
-  if (taskGroups.visibleCompletedTasks.length > 0) {
+  if (taskGroups.visibleCompletedTasks.length > 0 || taskGroups.visiblePreviousCompletedTasks.length > 0 || taskGroups.showCompletedToggle) {
     body.append(createCompletedSection(list, taskGroups));
   }
 
@@ -2358,9 +2378,9 @@ function createTaskRenameForm(task, list) {
   return form;
 }
 
-function createTaskElement(task, list) {
+function createTaskElement(task, list, variant = "") {
   const item = document.createElement("li");
-  item.className = `task-row${task.completed ? " is-complete" : ""}`;
+  item.className = `task-row${task.completed ? " is-complete" : ""}${variant === "previous" ? " is-previous-complete" : ""}`;
   if (isMenuOpen("task", list.id, task.id)) {
     item.classList.add("has-open-menu");
   }
@@ -2431,6 +2451,32 @@ function formatProgressText(doneTasks, totalTasks) {
   return totalTasks > 0 ? `${doneTasks}/${totalTasks} completed` : "0 completed";
 }
 
+function formatDailyProgressText(list) {
+  const progress = getDailyProgress(list);
+  return formatProgressText(progress.completedToday, progress.total);
+}
+
+function getDailyProgress(list) {
+  const openTasks = list.tasks.filter((task) => !task.completed).length;
+  const completedToday = list.tasks.filter(isTaskCompletedToday).length;
+  return {
+    completedToday,
+    total: openTasks + completedToday
+  };
+}
+
+function isTaskCompletedToday(task) {
+  return Boolean(task.completed) && getTaskCompletionDateKey(task) === getDateKey();
+}
+
+function getTaskCompletionDateKey(task) {
+  if (!task?.completedAt) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(task.completedAt)) return task.completedAt;
+
+  const completedDate = new Date(task.completedAt);
+  return Number.isNaN(completedDate.getTime()) ? "" : getDateKey(completedDate);
+}
+
 function formatProjectProgressText(openTasks) {
   return `${openTasks} open`;
 }
@@ -2449,7 +2495,16 @@ function createCompletedSection(list, taskGroups) {
   const completedList = document.createElement("ul");
   completedList.className = "nested-task-list completed-task-list";
   completedList.replaceChildren(...taskGroups.visibleCompletedTasks.map((task) => createTaskElement(task, list)));
-  section.append(completedList);
+  if (taskGroups.visibleCompletedTasks.length > 0) {
+    section.append(completedList);
+  }
+
+  if (taskGroups.visiblePreviousCompletedTasks.length > 0) {
+    const previousList = document.createElement("ul");
+    previousList.className = "nested-task-list completed-task-list previous-completed-task-list";
+    previousList.replaceChildren(...taskGroups.visiblePreviousCompletedTasks.map((task) => createTaskElement(task, list, "previous")));
+    section.append(previousList);
+  }
 
   if (taskGroups.showCompletedToggle) {
     const button = document.createElement("button");
@@ -2458,8 +2513,8 @@ function createCompletedSection(list, taskGroups) {
     button.dataset.action = "toggle-completed-list";
     button.setAttribute("aria-expanded", String(taskGroups.isCompletedExpanded));
     button.textContent = taskGroups.isCompletedExpanded
-      ? "Show fewer completed to-dos"
-      : `And ${taskGroups.hiddenCompletedCount} more completed to-dos...`;
+      ? "Hide previous items"
+      : `View ${taskGroups.hiddenCompletedCount} previous item${taskGroups.hiddenCompletedCount === 1 ? "" : "s"}`;
     section.append(button);
   }
 
