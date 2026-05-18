@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.5";
+const appVersion = "0.1.6";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -420,8 +420,15 @@ async function handleTaskBoardClick(event) {
 
   if (button.dataset.action === "toggle-task") {
     const wasCompleted = task.completed;
+    const previousCompletedAt = task.completedAt;
+    const wasPreviousCompleted = wasCompleted && getTaskCompletionDateKey(task) !== getDateKey();
     task.completed = !task.completed;
     task.completedAt = task.completed ? new Date().toISOString() : "";
+    if (wasPreviousCompleted && !task.completed) {
+      task.previousCompletedAt = previousCompletedAt;
+    } else {
+      delete task.previousCompletedAt;
+    }
     markTaskUpdated(task);
     const syncTaskOrderListIds = [];
     if (wasCompleted && !task.completed) {
@@ -445,6 +452,7 @@ async function handleTaskBoardClick(event) {
   if (button.dataset.action === "delete-task") {
     const deletedTask = cloneTask(task);
     const deletedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
+    const shouldReturnToPrevious = isReusedPreviousTask(deletedTask);
     const deletedAt = new Date().toISOString();
     rememberTaskDeletion(list, deletedTask, deletedAt);
     list.tasks = list.tasks.filter((item) => item.id !== task.id);
@@ -452,6 +460,13 @@ async function handleTaskBoardClick(event) {
       editingTask = null;
     }
     openMenu = null;
+    if (shouldReturnToPrevious) {
+      showUndo(`Removed "${deletedTask.title}" from open tasks.`, () => {
+        returnTaskToPreviousCompleted(list.id, deletedTask, deletedTaskIndex);
+      }, { actionLabel: "Return to Previous" });
+      persistAndRender({ sharedListIds: [list.id] });
+      return;
+    }
     showUndo(`Deleted "${deletedTask.title}".`, () => {
       const currentList = findList(list.id);
       forgetTaskDeletion(currentList, deletedTask.id);
@@ -2540,6 +2555,24 @@ function isTaskCompletedToday(task) {
   return Boolean(task.completed) && getTaskCompletionDateKey(task) === getDateKey();
 }
 
+function isReusedPreviousTask(task) {
+  return Boolean(task && !task.completed && task.previousCompletedAt);
+}
+
+function returnTaskToPreviousCompleted(listId, task, index) {
+  const currentList = findList(listId);
+  if (!currentList || !task) return;
+
+  const restoredTask = cloneTask(task);
+  restoredTask.completed = true;
+  restoredTask.completedAt = restoredTask.previousCompletedAt || restoredTask.completedAt || restoredTask.updatedAt || new Date().toISOString();
+  delete restoredTask.previousCompletedAt;
+  forgetTaskDeletion(currentList, restoredTask.id);
+  markTaskUpdated(restoredTask);
+  insertTaskAt(currentList, restoredTask, index);
+  persistAndRender({ sharedListIds: [listId] });
+}
+
 function getTaskCompletionDateKey(task) {
   if (!task?.completedAt) return "";
   if (/^\d{4}-\d{2}-\d{2}$/.test(task.completedAt)) return task.completedAt;
@@ -2779,10 +2812,11 @@ function notifyUser(message) {
   });
 }
 
-function showUndo(message, undo) {
+function showUndo(message, undo, options = {}) {
   window.clearTimeout(undoTimer);
   undoAction = typeof undo === "function" ? undo : null;
   undoMessage.textContent = message;
+  undoButton.textContent = options.actionLabel || "Undo";
   undoToast.hidden = false;
 
   undoTimer = window.setTimeout(clearUndoAction, undoTimeoutMs);
@@ -2794,6 +2828,7 @@ function clearUndoAction() {
   undoAction = null;
   undoToast.hidden = true;
   undoMessage.textContent = "";
+  undoButton.textContent = "Undo";
 }
 
 function runUndoAction() {
@@ -2838,6 +2873,7 @@ function createTask(title, options = {}) {
     priority: priorities.includes(options.priority) ? options.priority : "normal",
     completed,
     completedAt: options.completedAt || (completed ? createdAt : ""),
+    previousCompletedAt: options.previousCompletedAt || "",
     createdAt,
     updatedAt
   };
