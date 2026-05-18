@@ -3,6 +3,7 @@ const legacyStorageKey = "tasks.v1";
 const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
+const appOptionsKey = "tasks.options.v1";
 const listCollapseKey = "tasks.listCollapse.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
 const syncUserStorageKey = "tasks.syncUserId.v1";
@@ -23,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.4";
+const appVersion = "0.1.5";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -36,6 +37,10 @@ const settingsMenu = document.querySelector("#settingsMenu");
 const appVersionLabel = document.querySelector("#appVersion");
 const lastSyncedAtLabel = document.querySelector("#lastSyncedAt");
 const themeToggle = document.querySelector("#themeToggle");
+const optionsToggleButton = document.querySelector("#optionsToggleButton");
+const settingsOptions = document.querySelector("#settingsOptions");
+const showProjectsOption = document.querySelector("#showProjectsOption");
+const showTomorrowOption = document.querySelector("#showTomorrowOption");
 const updateAppButton = document.querySelector("#updateAppButton");
 const viewArchiveButton = document.querySelector("#viewArchiveButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
@@ -70,6 +75,7 @@ const filterMenuLabel = document.querySelector("#filterMenuLabel");
 const projectSection = document.querySelector(".project-section");
 const tomorrowSection = document.querySelector(".tomorrow-section");
 const tomorrowToggle = document.querySelector("#tomorrowToggle");
+const tomorrowLabel = document.querySelector("#tomorrowLabel");
 const tomorrowBody = document.querySelector("#tomorrowBody");
 const tomorrowCount = document.querySelector("#tomorrowCount");
 const tomorrowList = document.querySelector("#tomorrowList");
@@ -94,12 +100,14 @@ let lists = loadLists();
 hydrateArchiveStateFromLists(lists);
 lists = applyArchiveMetadataToLists(lists);
 persistArchiveState();
+let appOptions = loadAppOptions();
 let tomorrowQueue = loadTomorrowQueue();
 let filter = "all";
 let dragState = null;
 let openMenu = null;
 let filterMenuOpen = false;
 let settingsMenuOpen = false;
+let settingsOptionsOpen = false;
 let editingListId = null;
 let editingTask = null;
 let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
@@ -630,6 +638,32 @@ themeToggle.addEventListener("click", () => {
   }
   settingsMenuOpen = false;
   renderSettingsMenu();
+});
+
+optionsToggleButton.addEventListener("click", () => {
+  settingsOptionsOpen = !settingsOptionsOpen;
+  renderSettingsMenu();
+});
+
+showProjectsOption.addEventListener("change", () => {
+  appOptions.showProjects = showProjectsOption.checked;
+  saveAppOptions();
+  render();
+});
+
+showTomorrowOption.addEventListener("change", () => {
+  appOptions.showTomorrow = showTomorrowOption.checked;
+  saveAppOptions();
+  render();
+});
+
+settingsOptions.addEventListener("click", (event) => {
+  const modeButton = event.target.closest("[data-queue-mode]");
+  if (!modeButton) return;
+
+  appOptions.tomorrowMode = modeButton.dataset.queueMode === "weekdays" ? "weekdays" : "daily";
+  saveAppOptions();
+  render();
 });
 
 updateAppButton.addEventListener("click", async () => {
@@ -1881,6 +1915,27 @@ function loadCompletedArchiveText() {
   return mergeArchiveText(localStorage.getItem(completedArchiveKey) || "");
 }
 
+function loadAppOptions() {
+  try {
+    return normalizeAppOptions(JSON.parse(localStorage.getItem(appOptionsKey)));
+  } catch {
+    return normalizeAppOptions();
+  }
+}
+
+function normalizeAppOptions(options = {}) {
+  return {
+    showProjects: options.showProjects !== false,
+    showTomorrow: options.showTomorrow !== false,
+    tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily"
+  };
+}
+
+function saveAppOptions() {
+  appOptions = normalizeAppOptions(appOptions);
+  localStorage.setItem(appOptionsKey, JSON.stringify(appOptions));
+}
+
 function loadListCollapsePrefs() {
   try {
     const savedPrefs = JSON.parse(localStorage.getItem(listCollapseKey));
@@ -1919,7 +1974,10 @@ function render() {
   renderFilterMenu();
   renderSettingsMenu();
   renderTomorrowQueue();
-  emptyState.hidden = visibleLists.length + visibleProjectLists.length > 0;
+  projectSection.hidden = !appOptions.showProjects;
+  tomorrowSection.hidden = !appOptions.showTomorrow;
+  emptyState.hidden = visibleLists.length + (appOptions.showProjects ? visibleProjectLists.length : 0) > 0;
+  document.body.classList.toggle("has-no-pinned-footer", !appOptions.showProjects && !appOptions.showTomorrow);
 
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
   listBoard.replaceChildren(...visibleLists.map(createListElement));
@@ -1942,11 +2000,20 @@ function renderFilterMenu() {
 function renderSettingsMenu() {
   settingsMenuButton.setAttribute("aria-expanded", String(settingsMenuOpen));
   settingsMenu.hidden = !settingsMenuOpen;
+  optionsToggleButton.setAttribute("aria-expanded", String(settingsOptionsOpen));
+  settingsOptions.hidden = !settingsOptionsOpen;
 
   const isDark = document.documentElement.dataset.theme === "dark";
   themeToggle.textContent = isDark ? "Light Mode" : "Dark Mode";
   themeToggle.setAttribute("aria-label", isDark ? "Switch to light mode" : "Switch to dark mode");
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
+  showProjectsOption.checked = appOptions.showProjects;
+  showTomorrowOption.checked = appOptions.showTomorrow;
+  settingsOptions.querySelectorAll("[data-queue-mode]").forEach((button) => {
+    const isActive = button.dataset.queueMode === appOptions.tomorrowMode;
+    button.classList.toggle("is-active", isActive);
+    button.setAttribute("aria-pressed", String(isActive));
+  });
   refreshSyncButton.disabled = !isSupabaseConfigured() || !syncClient || !syncUser;
   const hasArchive = Boolean(getCompletedArchiveExportText().trim());
   viewArchiveButton.disabled = !hasArchive;
@@ -2055,7 +2122,11 @@ function downloadArchiveText() {
 
 function renderTomorrowQueue(options = {}) {
   const { scrollToBottom = false } = options;
+  const queueLabel = getTomorrowQueueLabel();
 
+  tomorrowLabel.textContent = queueLabel;
+  tomorrowInput.placeholder = queueLabel === "Tomorrow" ? "Add to tomorrow" : `Add to ${queueLabel}`;
+  tomorrowInput.setAttribute("aria-label", tomorrowInput.placeholder);
   tomorrowToggle.setAttribute("aria-expanded", String(!tomorrowCollapsed));
   tomorrowBody.hidden = tomorrowCollapsed;
   tomorrowCount.textContent = tomorrowQueue.length === 1 ? "1 queued" : `${tomorrowQueue.length} queued`;
@@ -2971,7 +3042,7 @@ function createTomorrowQueueItem(title, options = {}) {
   return {
     id: options.id || uid(),
     title,
-    targetDate: options.targetDate || getTomorrowDateKey(),
+    targetDate: options.targetDate || getNextQueueTargetDateKey(),
     createdAt: options.createdAt || new Date().toISOString()
   };
 }
@@ -2987,7 +3058,7 @@ function normalizeTomorrowQueueItem(item) {
 
   return createTomorrowQueueItem(title, {
     id: item.id,
-    targetDate: item.targetDate || getTomorrowDateKey(new Date(item.createdAt || Date.now())),
+    targetDate: item.targetDate || getNextQueueTargetDateKey(new Date(item.createdAt || Date.now())),
     createdAt: item.createdAt
   });
 }
@@ -3368,9 +3439,10 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
   const todayList = nextLists.find(isTodayList);
   todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
   const remainingQueue = [];
+  const canRollToday = shouldRollTomorrowQueueToday();
 
   normalizeTomorrowQueue(queue).forEach((item) => {
-    if (item.targetDate > todayKey) {
+    if (!canRollToday || item.targetDate > todayKey) {
       remainingQueue.push(item);
       return;
     }
@@ -3923,7 +3995,9 @@ function rollTomorrowQueueIntoToday(options = {}) {
     persistArchiveState();
   }
 
-  const dueItems = tomorrowQueue.filter((item) => item.targetDate <= todayKey);
+  const dueItems = shouldRollTomorrowQueueToday()
+    ? tomorrowQueue.filter((item) => item.targetDate <= todayKey)
+    : [];
   if (dueItems.length === 0) {
     if (dayChanged) {
       persistLists({ syncShared: false });
@@ -4151,9 +4225,9 @@ function refreshTodayText() {
 
 function updateTomorrowFooterSpace() {
   window.requestAnimationFrame(() => {
-    const footerHeight = tomorrowSection?.getBoundingClientRect().height || 0;
-    const projectHeight = projectSection?.getBoundingClientRect().height || 0;
-    document.documentElement.style.setProperty("--tomorrow-footer-space", `${footerHeight + 18}px`);
+    const footerHeight = appOptions.showTomorrow ? tomorrowSection?.getBoundingClientRect().height || 0 : 0;
+    const projectHeight = appOptions.showProjects ? projectSection?.getBoundingClientRect().height || 0 : 0;
+    document.documentElement.style.setProperty("--tomorrow-footer-space", `${footerHeight ? footerHeight + 18 : 0}px`);
     document.documentElement.style.setProperty("--project-footer-space", `${projectHeight ? projectHeight + 10 : 0}px`);
   });
 }
@@ -4193,6 +4267,37 @@ function getDateKey(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function getTomorrowQueueLabel() {
+  if (appOptions.tomorrowMode === "weekdays") {
+    const day = new Date().getDay();
+    if (day === 5 || day === 6) return "Monday";
+  }
+
+  return "Tomorrow";
+}
+
+function getNextQueueTargetDateKey(date = new Date()) {
+  if (appOptions.tomorrowMode !== "weekdays") {
+    return getTomorrowDateKey(date);
+  }
+
+  const targetDate = new Date(date);
+  do {
+    targetDate.setDate(targetDate.getDate() + 1);
+  } while (!isWeekday(targetDate));
+
+  return getDateKey(targetDate);
+}
+
+function shouldRollTomorrowQueueToday() {
+  return appOptions.tomorrowMode !== "weekdays" || isWeekday(new Date());
+}
+
+function isWeekday(date) {
+  const day = date.getDay();
+  return day >= 1 && day <= 5;
 }
 
 function getTomorrowDateKey(date = new Date()) {

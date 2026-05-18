@@ -29,6 +29,29 @@
               <button class="menu-link settings-menu-item" id="copyArchiveButton" type="button" role="menuitem">Copy Archive</button>
               <button class="menu-link settings-menu-item" id="downloadArchiveButton" type="button" role="menuitem">Download Archive</button>
               <button class="menu-link settings-menu-item" id="themeToggle" type="button" role="menuitem">Dark Mode</button>
+              <button class="menu-link settings-menu-item settings-options-toggle" id="optionsToggleButton" type="button" role="menuitem" aria-expanded="false" aria-controls="settingsOptions">Options</button>
+              <div class="settings-options" id="settingsOptions" hidden>
+                <div class="settings-option-group">
+                  <p class="settings-option-label">Footer</p>
+                  <label class="settings-toggle-row">
+                    <span>Projects</span>
+                    <input id="showProjectsOption" type="checkbox">
+                    <span class="settings-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-toggle-row">
+                    <span>Tomorrow</span>
+                    <input id="showTomorrowOption" type="checkbox">
+                    <span class="settings-switch" aria-hidden="true"></span>
+                  </label>
+                </div>
+                <div class="settings-option-group">
+                  <p class="settings-option-label">Tomorrow queue</p>
+                  <div class="settings-segmented" role="group" aria-label="Tomorrow queue schedule">
+                    <button class="settings-segment" type="button" data-queue-mode="daily">7 days</button>
+                    <button class="settings-segment" type="button" data-queue-mode="weekdays">Mon-Fri</button>
+                  </div>
+                </div>
+              </div>
               <div class="settings-detail" role="presentation">
                 <span>Last synced</span>
                 <span id="lastSyncedAt">Never</span>
@@ -90,7 +113,7 @@
 
       <section class="tomorrow-section" aria-label="Tomorrow queue">
         <button class="tomorrow-toggle" id="tomorrowToggle" type="button" aria-expanded="true" aria-controls="tomorrowBody">
-          <span>Tomorrow</span>
+          <span id="tomorrowLabel">Tomorrow</span>
           <span id="tomorrowCount">0 queued</span>
         </button>
         <div class="tomorrow-body" id="tomorrowBody">
