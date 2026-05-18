@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.6";
+const appVersion = "0.1.7";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -676,8 +676,7 @@ settingsOptions.addEventListener("click", (event) => {
   const modeButton = event.target.closest("[data-queue-mode]");
   if (!modeButton) return;
 
-  appOptions.tomorrowMode = modeButton.dataset.queueMode === "weekdays" ? "weekdays" : "daily";
-  saveAppOptions();
+  setAccountTomorrowMode(modeButton.dataset.queueMode);
   render();
 });
 
@@ -1323,6 +1322,7 @@ function applyRemoteState(remoteState) {
   lists = Array.isArray(remoteState.lists)
     ? ensureTodayList(remoteState.lists.map(normalizeList))
     : ensureTodayList([createList("Personal")]);
+  applySyncedAccountOptions(getAccountOptionsFromLists(lists));
   hydrateArchiveStateFromLists(lists);
   lists = applyArchiveMetadataToLists(lists);
   tomorrowQueue = normalizeTomorrowQueue(remoteState.tomorrowQueue);
@@ -1353,6 +1353,12 @@ function resetInMemoryTaskStateForAccountBoundary() {
   completedArchiveText = "";
   deletedSharedTasks = [];
   lastTodayDateKey = getDateKey();
+  appOptions = normalizeAppOptions({
+    ...appOptions,
+    tomorrowMode: "daily",
+    tomorrowModeUpdatedAt: ""
+  });
+  saveAppOptions();
   lists = [];
   tomorrowQueue = [];
   expandedCompletedLists.clear();
@@ -1487,6 +1493,7 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
     });
 
   if (!error) {
+    applySyncedAccountOptions(getAccountOptionsFromLists(mergedState.lists));
     hydrateArchiveStateFromLists(mergedState.lists);
     lists = applyArchiveMetadataToLists(ensureTodayList([...mergedState.lists, ...getStandingLists(lists)]));
     tomorrowQueue = mergedState.tomorrowQueue;
@@ -1932,7 +1939,13 @@ function loadCompletedArchiveText() {
 
 function loadAppOptions() {
   try {
-    return normalizeAppOptions(JSON.parse(localStorage.getItem(appOptionsKey)));
+    const savedOptions = JSON.parse(localStorage.getItem(appOptionsKey));
+    const normalizedOptions = normalizeAppOptions(savedOptions);
+    if (savedOptions?.tomorrowMode === "weekdays" && !normalizedOptions.tomorrowModeUpdatedAt) {
+      normalizedOptions.tomorrowModeUpdatedAt = new Date().toISOString();
+      localStorage.setItem(appOptionsKey, JSON.stringify(normalizedOptions));
+    }
+    return normalizedOptions;
   } catch {
     return normalizeAppOptions();
   }
@@ -1942,13 +1955,91 @@ function normalizeAppOptions(options = {}) {
   return {
     showProjects: options.showProjects !== false,
     showTomorrow: options.showTomorrow !== false,
-    tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily"
+    tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily",
+    tomorrowModeUpdatedAt: isValidDateValue(options.tomorrowModeUpdatedAt || options.updatedAt)
+      ? options.tomorrowModeUpdatedAt || options.updatedAt
+      : ""
   };
 }
 
 function saveAppOptions() {
   appOptions = normalizeAppOptions(appOptions);
   localStorage.setItem(appOptionsKey, JSON.stringify(appOptions));
+}
+
+function setAccountTomorrowMode(mode) {
+  const tomorrowMode = mode === "weekdays" ? "weekdays" : "daily";
+  if (appOptions.tomorrowMode === tomorrowMode && appOptions.tomorrowModeUpdatedAt) return;
+
+  const updatedAt = new Date().toISOString();
+  appOptions = normalizeAppOptions({
+    ...appOptions,
+    tomorrowMode,
+    tomorrowModeUpdatedAt: updatedAt
+  });
+  saveAppOptions();
+  applyAccountOptionsToTodayList(getAccountOptionsForSync());
+  persistLists({ syncShared: false });
+}
+
+function getAccountOptionsForSync() {
+  return normalizeAccountOptions({
+    tomorrowMode: appOptions.tomorrowMode,
+    updatedAt: appOptions.tomorrowModeUpdatedAt
+  });
+}
+
+function normalizeAccountOptions(options = {}) {
+  return {
+    tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily",
+    updatedAt: isValidDateValue(options.updatedAt) ? options.updatedAt : ""
+  };
+}
+
+function getAccountOptionsFromLists(sourceLists = lists) {
+  const todayList = ensureTodayList(sourceLists).find(isTodayList);
+  return normalizeAccountOptions(todayList?.accountOptions);
+}
+
+function getLatestAccountOptions(...sourceLists) {
+  return sourceLists.reduce((latest, list) => {
+    const candidate = normalizeAccountOptions(list?.accountOptions);
+    if (!candidate.updatedAt && !latest.updatedAt) {
+      return candidate.tomorrowMode !== "daily" ? candidate : latest;
+    }
+    if (!candidate.updatedAt) return latest;
+    if (!latest.updatedAt || isTimestampNewer(candidate.updatedAt, latest.updatedAt) || candidate.updatedAt === latest.updatedAt) {
+      return candidate;
+    }
+    return latest;
+  }, normalizeAccountOptions());
+}
+
+function applySyncedAccountOptions(accountOptions) {
+  const syncedOptions = normalizeAccountOptions(accountOptions);
+  const localOptions = getAccountOptionsForSync();
+  if (!syncedOptions.updatedAt) return false;
+  if (localOptions.updatedAt && isTimestampNewer(localOptions.updatedAt, syncedOptions.updatedAt)) return false;
+
+  appOptions = normalizeAppOptions({
+    ...appOptions,
+    tomorrowMode: syncedOptions.tomorrowMode,
+    tomorrowModeUpdatedAt: syncedOptions.updatedAt
+  });
+  saveAppOptions();
+  return true;
+}
+
+function applyAccountOptionsToTodayList(accountOptions = getAccountOptionsForSync()) {
+  lists = ensureTodayList(lists);
+  const todayList = lists.find(isTodayList);
+  if (!todayList) return;
+
+  const syncedOptions = normalizeAccountOptions(accountOptions);
+  todayList.accountOptions = syncedOptions;
+  if (syncedOptions.updatedAt) {
+    markListUpdated(todayList, syncedOptions.updatedAt);
+  }
 }
 
 function loadListCollapsePrefs() {
@@ -2895,6 +2986,7 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     memberRole: options.memberRole || "",
     completedArchiveText: typeof options.completedArchiveText === "string" ? options.completedArchiveText : "",
     lastTodayDateKey: options.lastTodayDateKey || "",
+    accountOptions: normalizeAccountOptions(options.accountOptions),
     sharedListOrder: normalizeSharedListOrder(options.sharedListOrder),
     sharedListOrderUpdatedAt: options.sharedListOrderUpdatedAt || "",
     deletedTaskTombstones: normalizeTaskTombstones(options.deletedTaskTombstones)
@@ -2921,6 +3013,7 @@ function normalizeList(list) {
     memberRole: list.memberRole || list.member_role || "",
     completedArchiveText: typeof list.completedArchiveText === "string" ? list.completedArchiveText : "",
     lastTodayDateKey: list.lastTodayDateKey || "",
+    accountOptions: normalizeAccountOptions(list.accountOptions),
     sharedListOrder: normalizeSharedListOrder(list.sharedListOrder),
     sharedListOrderUpdatedAt: list.sharedListOrderUpdatedAt || "",
     deletedTaskTombstones
@@ -3384,6 +3477,7 @@ function mergeTodayLists(localToday, remoteToday) {
   const sources = [remoteToday, localToday].filter(Boolean);
   const localUiState = localToday || remoteToday;
   const sharedOrder = getLatestSharedListOrderMetadata(remoteToday, localToday);
+  const accountOptions = getLatestAccountOptions(remoteToday, localToday);
   const todayList = createList("Today", false, [], {
     id: todayListId,
     type: todayListType,
@@ -3395,6 +3489,7 @@ function mergeTodayLists(localToday, remoteToday) {
       ...sources.map((list) => list.completedArchiveText)
     ),
     lastTodayDateKey: getLatestDateKey(lastTodayDateKey, ...sources.map((list) => list.lastTodayDateKey)),
+    accountOptions,
     sharedListOrder: sharedOrder.order,
     sharedListOrderUpdatedAt: sharedOrder.updatedAt
   });
@@ -3670,6 +3765,7 @@ function getPrivateLists(sourceLists = lists) {
     ...list,
     completedArchiveText,
     lastTodayDateKey,
+    accountOptions: getAccountOptionsForSync(),
     sharedListOrder: sharedOrder.order,
     sharedListOrderUpdatedAt: sharedOrder.updatedAt
   }));
@@ -4099,6 +4195,7 @@ function ensureTodayList(rawLists) {
         ? list.completedArchiveText
         : todayList.completedArchiveText;
       todayList.lastTodayDateKey = list.lastTodayDateKey || todayList.lastTodayDateKey;
+      todayList.accountOptions = getLatestAccountOptions(todayList, list);
       const sharedOrder = getLatestSharedListOrderMetadata(todayList, list);
       todayList.sharedListOrder = sharedOrder.order;
       todayList.sharedListOrderUpdatedAt = sharedOrder.updatedAt;
