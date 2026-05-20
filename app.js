@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.8";
+const appVersion = "0.1.12";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -87,8 +87,18 @@ const filterLabels = {
   active: "Open",
   completed: "Completed",
   shared: "Shared",
-  private: "Private"
+  private: "Private",
+  hidden: "All Hidden"
 };
+const defaultListColor = "default";
+const listColorOptions = [
+  { value: defaultListColor, label: "Default" },
+  { value: "sage", label: "Sage" },
+  { value: "sky", label: "Sky" },
+  { value: "amber", label: "Amber" },
+  { value: "slate", label: "Slate" }
+];
+const listColorValues = new Set(listColorOptions.map((option) => option.value));
 
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
@@ -359,6 +369,14 @@ async function handleTaskBoardClick(event) {
     return;
   }
 
+  if (button.dataset.action === "set-list-color") {
+    if (isPinnedList(list)) return;
+    setListColor(list, button.dataset.listColor);
+    openMenu = null;
+    persistAndRender({ syncShared: false });
+    return;
+  }
+
   if (button.dataset.action === "toggle-completed-list") {
     if (expandedCompletedLists.has(list.id)) {
       expandedCompletedLists.delete(list.id);
@@ -544,6 +562,12 @@ filterMenuButton.addEventListener("click", () => {
 });
 
 filterMenu.addEventListener("click", (event) => {
+  const commandButton = event.target.closest("[data-filter-command]");
+  if (commandButton?.dataset.filterCommand === "hide-all-lists") {
+    hideAllShareableLists();
+    return;
+  }
+
   const button = event.target.closest("[data-filter]");
   if (!button) return;
 
@@ -553,6 +577,25 @@ filterMenu.addEventListener("click", (event) => {
   openMenu = null;
   render();
 });
+
+function hideAllShareableLists() {
+  const hiddenLists = lists.filter((list) => !isTodayList(list) && !isProjectList(list));
+  if (activeTaskFormListId && hiddenLists.some((list) => list.id === activeTaskFormListId)) {
+    activeTaskFormListId = null;
+  }
+  if (editingTask && hiddenLists.some((list) => list.id === editingTask.listId)) {
+    editingTask = null;
+  }
+  if (editingListId && hiddenLists.some((list) => list.id === editingListId)) {
+    editingListId = null;
+  }
+
+  filter = "hidden";
+  filterMenuOpen = false;
+  settingsMenuOpen = false;
+  openMenu = null;
+  render();
+}
 
 settingsMenuButton.addEventListener("click", () => {
   settingsMenuOpen = !settingsMenuOpen;
@@ -2022,17 +2065,73 @@ function setAccountTomorrowMode(mode) {
 }
 
 function getAccountOptionsForSync() {
+  const currentOptions = getAccountOptionsFromLists(lists);
+  const latestUpdatedAt = appOptions.tomorrowModeUpdatedAt && isTimestampNewer(appOptions.tomorrowModeUpdatedAt, currentOptions.updatedAt)
+    ? appOptions.tomorrowModeUpdatedAt
+    : currentOptions.updatedAt || appOptions.tomorrowModeUpdatedAt;
+
   return normalizeAccountOptions({
+    ...currentOptions,
     tomorrowMode: appOptions.tomorrowMode,
-    updatedAt: appOptions.tomorrowModeUpdatedAt
+    updatedAt: latestUpdatedAt
   });
 }
 
 function normalizeAccountOptions(options = {}) {
   return {
     tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily",
-    updatedAt: isValidDateValue(options.updatedAt) ? options.updatedAt : ""
+    updatedAt: isValidDateValue(options.updatedAt) ? options.updatedAt : "",
+    listColors: normalizeListColorMap(options.listColors)
   };
+}
+
+function normalizeListColor(color) {
+  const value = String(color || defaultListColor).trim().toLowerCase().replace(/\s+/g, "-");
+  if (value === "sun" || value === "sun-yellow" || value === "some-sun-yellow" || value === "yellow") return "amber";
+  return listColorValues.has(value) ? value : defaultListColor;
+}
+
+function normalizeListColorMap(colors = {}) {
+  if (!colors || typeof colors !== "object" || Array.isArray(colors)) return {};
+
+  return Object.fromEntries(
+    Object.entries(colors)
+      .map(([listId, color]) => [listId, normalizeListColor(color)])
+      .filter(([listId, color]) => listId && color !== defaultListColor)
+  );
+}
+
+function getListColorMap() {
+  return normalizeListColorMap(getAccountOptionsFromLists(lists).listColors);
+}
+
+function getListColor(list) {
+  if (!list || isPinnedList(list)) return defaultListColor;
+  return normalizeListColor(getListColorMap()[list.id] || list.color);
+}
+
+function setListColor(list, color) {
+  const selectedColor = normalizeListColor(color);
+  const currentOptions = getAccountOptionsFromLists(lists);
+  const listColors = {
+    ...normalizeListColorMap(currentOptions.listColors)
+  };
+  const updatedAt = new Date().toISOString();
+
+  if (selectedColor === defaultListColor) {
+    delete listColors[list.id];
+    delete list.color;
+  } else {
+    listColors[list.id] = selectedColor;
+    list.color = selectedColor;
+  }
+
+  applyAccountOptionsToTodayList({
+    ...currentOptions,
+    tomorrowMode: appOptions.tomorrowMode,
+    listColors,
+    updatedAt
+  });
 }
 
 function getAccountOptionsFromLists(sourceLists = lists) {
@@ -2321,6 +2420,7 @@ function createTomorrowQueueElement(entry) {
 function shouldShowList(list) {
   if (isTodayList(list)) return true;
   if (isProjectList(list)) return true;
+  if (filter === "hidden") return false;
   if (filter === "all") return true;
   if (filter === "shared") return isSharedList(list);
   if (filter === "private") return !isSharedList(list);
@@ -2413,6 +2513,10 @@ function createListElement(list) {
     item.classList.add("has-open-menu");
   }
   item.dataset.listId = list.id;
+  const listColor = getListColor(list);
+  if (listColor !== defaultListColor) {
+    item.dataset.listColor = listColor;
+  }
 
   const header = document.createElement("div");
   header.className = "list-header";
@@ -2794,6 +2898,7 @@ function createListMenu(list) {
 
   menu.append(createMenuButton("Details", "toggle-fields", list.showDetails ? `Hide details for ${list.name}` : `Show details for ${list.name}`, list.showDetails));
   if (!isPinnedList(list)) {
+    menu.append(createListColorMenu(list));
     if (canShareList(list)) {
       menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
     }
@@ -2804,6 +2909,39 @@ function createListMenu(list) {
   }
 
   return menu;
+}
+
+function createListColorMenu(list) {
+  const group = document.createElement("div");
+  const selectedColor = getListColor(list);
+  group.className = "menu-color-group";
+  group.setAttribute("role", "group");
+  group.setAttribute("aria-label", "List color");
+
+  const label = document.createElement("span");
+  label.className = "menu-color-label";
+  label.textContent = "Color";
+
+  const swatches = document.createElement("div");
+  swatches.className = "menu-color-swatches";
+
+  listColorOptions.forEach((option) => {
+    swatches.append(createListColorButton(option, selectedColor === option.value));
+  });
+
+  group.append(label, swatches);
+  return group;
+}
+
+function createListColorButton(option, active = false) {
+  const button = createActionButton("", "set-list-color", `${option.label} list color`);
+  button.className = "menu-color-button";
+  button.dataset.listColor = option.value;
+  button.title = option.label;
+  button.classList.toggle("is-active", active);
+  button.setAttribute("role", "menuitemradio");
+  button.setAttribute("aria-checked", String(Boolean(active)));
+  return button;
 }
 
 function createTaskMenu(task, list) {
@@ -3023,6 +3161,7 @@ function createList(name, collapsed = false, tasks = [], options = {}) {
     ownerId: options.ownerId || "",
     shared: Boolean(options.shared),
     memberRole: options.memberRole || "",
+    color: normalizeListColor(options.color) === defaultListColor ? "" : normalizeListColor(options.color),
     completedArchiveText: typeof options.completedArchiveText === "string" ? options.completedArchiveText : "",
     lastTodayDateKey: options.lastTodayDateKey || "",
     accountOptions: normalizeAccountOptions(options.accountOptions),
@@ -3050,6 +3189,7 @@ function normalizeList(list) {
     ownerId: list.ownerId || list.owner_id || "",
     shared: Boolean(list.shared),
     memberRole: list.memberRole || list.member_role || "",
+    color: normalizeListColor(list.color || list.listColor) === defaultListColor ? "" : normalizeListColor(list.color || list.listColor),
     completedArchiveText: typeof list.completedArchiveText === "string" ? list.completedArchiveText : "",
     lastTodayDateKey: list.lastTodayDateKey || "",
     accountOptions: normalizeAccountOptions(list.accountOptions),
