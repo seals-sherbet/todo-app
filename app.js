@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.7";
+const appVersion = "0.1.8";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -122,6 +122,7 @@ let syncClient = null;
 let syncChannel = null;
 let syncPushTimer = null;
 let syncRefreshTimer = null;
+let syncTransientRetryTimer = null;
 let syncApplyingRemoteState = false;
 let syncLastRemoteUpdatedAt = "";
 let syncLastSuccessAt = localStorage.getItem(syncLastSuccessKey) || "";
@@ -1025,25 +1026,23 @@ async function handleSyncCodeSubmit(event) {
 async function loadRemoteState(options = {}) {
   if (!syncClient || !syncUser) return;
   const trustLocalState = options.trustLocalState ?? isLocalTaskStateForUser(syncUser.id);
+  const retryTransientErrors = options.retryTransientErrors !== false;
 
   const inviteResult = await claimPendingListInvites();
   if (inviteResult?.error) {
-    updateSyncUi("Setup needed");
-    notifyUser(`Shared invite sync could not load. ${inviteResult.error.message}`);
+    handleRemoteSyncError("Shared invite sync", inviteResult.error, { retryTransientErrors });
     return;
   }
 
   const privateResult = await fetchPrivateDocument();
   if (privateResult.error) {
-    updateSyncUi("Setup needed");
-    notifyUser(`Supabase sync could not load. ${privateResult.error.message}`);
+    handleRemoteSyncError("Private sync", privateResult.error, { retryTransientErrors });
     return;
   }
 
   let sharedResult = await fetchSharedLists();
   if (sharedResult.error) {
-    updateSyncUi("Setup needed");
-    notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
+    handleRemoteSyncError("Shared list sync", sharedResult.error, { retryTransientErrors });
     return;
   }
 
@@ -1075,8 +1074,7 @@ async function loadRemoteState(options = {}) {
     await pushPrivateState(privateLists, nextTomorrowQueue);
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
-      updateSyncUi("Setup needed");
-      notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
+      handleRemoteSyncError("Shared list sync", sharedResult.error, { retryTransientErrors });
       return;
     }
   } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, privateLists, nextTomorrowQueue)) {
@@ -1095,8 +1093,7 @@ async function loadRemoteState(options = {}) {
     await pushSharedLists(localStandingLists.filter(canManageList));
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
-      updateSyncUi("Setup needed");
-      notifyUser(`Shared list sync could not load. ${sharedResult.error.message}`);
+      handleRemoteSyncError("Shared list sync", sharedResult.error, { retryTransientErrors });
       return;
     }
   }
@@ -1308,7 +1305,9 @@ function subscribeToRemoteChanges() {
 
 function clearRemoteSubscription() {
   window.clearTimeout(syncRefreshTimer);
+  window.clearTimeout(syncTransientRetryTimer);
   syncRefreshTimer = null;
+  syncTransientRetryTimer = null;
   if (!syncClient || !syncChannel) return;
 
   syncClient.removeChannel(syncChannel);
@@ -1790,11 +1789,18 @@ async function claimPendingListInvites() {
   const email = normalizeEmail(syncUser?.email || "");
   if (!email) return { claimed: 0, error: null };
 
-  const { data, error } = await syncClient.rpc("claim_pending_list_invites");
-  return {
-    claimed: Number(data) || 0,
-    error
-  };
+  try {
+    const { data, error } = await syncClient.rpc("claim_pending_list_invites");
+    return {
+      claimed: Number(data) || 0,
+      error
+    };
+  } catch (error) {
+    return {
+      claimed: 0,
+      error
+    };
+  }
 }
 
 function scheduleRemoteRefresh(payload) {
@@ -1855,6 +1861,39 @@ function reportSyncError(context, error) {
   console.error(message, error);
   updateSyncUi("Sync error");
   showSyncErrorDetails(message);
+}
+
+function handleRemoteSyncError(context, error, options = {}) {
+  reportSyncError(context, error);
+  if (options.retryTransientErrors !== false && isTransientSyncError(error)) {
+    scheduleTransientSyncRetry();
+  }
+}
+
+function isTransientSyncError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return [
+    "load fail",
+    "load failed",
+    "failed to fetch",
+    "network",
+    "fetch",
+    "timeout",
+    "timed out",
+    "offline"
+  ].some((text) => message.includes(text));
+}
+
+function scheduleTransientSyncRetry() {
+  if (!syncClient || !syncUser) return;
+
+  window.clearTimeout(syncTransientRetryTimer);
+  syncTransientRetryTimer = window.setTimeout(() => {
+    syncTransientRetryTimer = null;
+    if (!syncClient || !syncUser || document.hidden) return;
+    updateSyncUi("Checking sync...");
+    loadRemoteState({ retryTransientErrors: false });
+  }, 3000);
 }
 
 function formatSyncError(context, error) {
