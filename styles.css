@@ -470,7 +470,7 @@ h1 {
   border-radius: 18px;
   background: var(--list-card);
   box-shadow: var(--shadow);
-  padding: 10px 14px;
+  padding: 9px 14px;
 }
 
 form,
@@ -486,7 +486,7 @@ form,
 }
 
 .list-form .primary-button {
-  min-height: 34px;
+  min-height: 30px;
   border-radius: 999px;
   padding: 0 16px;
 }
@@ -845,6 +845,9 @@ button:focus-visible {
   --task-row-bg: #fbfffc;
   --task-title: #405c48;
   --check-bg: #cfe3d5;
+  --shared-accent: #57996b;
+  --shared-border: #b8d9bf;
+  --shared-progress: #477155;
   --shadow: 0 8px 18px rgba(87, 153, 107, 0.09);
 }
 
@@ -860,6 +863,9 @@ button:focus-visible {
   --task-row-bg: #fbfdff;
   --task-title: #405a73;
   --check-bg: #cfe2f2;
+  --shared-accent: #458cca;
+  --shared-border: #b9daf6;
+  --shared-progress: #466783;
   --shadow: 0 8px 18px rgba(69, 140, 202, 0.09);
 }
 
@@ -875,7 +881,10 @@ button:focus-visible {
   --task-row-bg: #fffdf9;
   --task-title: #66513a;
   --check-bg: #efd9b5;
-  --shadow: 0 8px 18px rgba(189, 125, 34, 0.09);
+  --shared-accent: #bd7d22;
+  --shared-border: #e8c784;
+  --shared-progress: #8c6840;
+  --shadow: 0 8px 18px rgba(189, 125, 34, 0.1);
 }
 
 .standing-list[data-list-color="slate"] {
@@ -890,6 +899,9 @@ button:focus-visible {
   --task-row-bg: #ffffff;
   --task-title: #46515d;
   --check-bg: #d3dae2;
+  --shared-accent: #657383;
+  --shared-border: #c5ced8;
+  --shared-progress: #657383;
   --shadow: 0 8px 18px rgba(70, 85, 101, 0.08);
 }
 
@@ -905,6 +917,9 @@ button:focus-visible {
   --task-row-bg: #293c31;
   --task-title: #d9f0df;
   --check-bg: #477155;
+  --shared-accent: #81c493;
+  --shared-border: #5f8f6e;
+  --shared-progress: #c2e5ca;
   --shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
@@ -920,6 +935,9 @@ button:focus-visible {
   --task-row-bg: #273a4c;
   --task-title: #d8ebfb;
   --check-bg: #466783;
+  --shared-accent: #89c5f2;
+  --shared-border: #5e8fbb;
+  --shared-progress: #d5eaff;
   --shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
@@ -935,6 +953,9 @@ button:focus-visible {
   --task-row-bg: #3f301d;
   --task-title: #f1ddbf;
   --check-bg: #6f532d;
+  --shared-accent: #e3ae55;
+  --shared-border: #9d7434;
+  --shared-progress: #ead0a7;
   --shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
@@ -950,6 +971,9 @@ button:focus-visible {
   --task-row-bg: #2e3640;
   --task-title: #e0e6ed;
   --check-bg: #566373;
+  --shared-accent: #a8b4c2;
+  --shared-border: #667382;
+  --shared-progress: #d4dce5;
   --shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
@@ -1500,76 +1524,186 @@ button:focus-visible {
   color: var(--muted);
 }
 
-.menu-color-group {
+.menu-color-panel {
   display: grid;
-  gap: 6px;
-  border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
-  margin-top: 2px;
-  padding: 7px 4px 4px;
+  margin: -1px 0 2px;
+  padding: 2px 0 4px;
+  animation: menuColorSlideDown 150ms ease;
+  transform-origin: top;
 }
 
-.menu-color-label {
+.menu-color-choices {
+  display: grid;
+  gap: 2px;
+}
+
+.menu-color-choice {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  min-height: 24px;
+  width: 100%;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--accent-strong);
+  padding: 0 7px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.menu-color-choice:hover,
+.menu-color-choice:focus-visible {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.menu-color-choice.is-active {
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--text);
+}
+
+.menu-color-swatch {
+  width: 12px;
+  height: 12px;
+  border: 1px solid var(--swatch-border, var(--line));
+  border-radius: 999px;
+  background: var(--swatch-bg, var(--shared-card));
+  box-shadow: inset 0 0 0 2px var(--panel-strong);
+}
+
+.menu-color-choice[data-list-color="default"] {
+  --swatch-bg: #c7427a;
+  --swatch-border: #a33266;
+}
+
+.menu-color-choice[data-list-color="sage"] {
+  --swatch-bg: #57996b;
+  --swatch-border: #347549;
+}
+
+.menu-color-choice[data-list-color="sky"] {
+  --swatch-bg: #458cca;
+  --swatch-border: #2a6fa6;
+}
+
+.menu-color-choice[data-list-color="amber"] {
+  --swatch-bg: #bd7d22;
+  --swatch-border: #965f14;
+}
+
+.menu-color-choice[data-list-color="slate"] {
+  --swatch-bg: #657383;
+  --swatch-border: #465565;
+}
+
+.menu-invites-panel {
+  display: grid;
+  gap: 6px;
+  margin: -1px 0 2px;
+  padding: 2px 0 4px;
+  animation: menuColorSlideDown 150ms ease;
+  transform-origin: top;
+}
+
+.menu-invites-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 4px;
+}
+
+.menu-invites-refresh,
+.menu-invite-remove {
+  min-height: 22px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 11%, transparent);
+  color: var(--accent-strong);
+  padding: 0 8px;
+  font-size: 0.66rem;
+  font-weight: 500;
+}
+
+.menu-invites-refresh:disabled {
   color: var(--muted);
-  font-size: 0.62rem;
+  cursor: default;
+  opacity: 0.7;
+}
+
+.menu-invites-message {
+  margin: 0;
+  color: var(--muted);
+  padding: 1px 7px 3px;
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+.menu-invites-message.is-error {
+  color: var(--danger);
+}
+
+.menu-invites-list {
+  display: grid;
+  gap: 3px;
+}
+
+.menu-invite-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  padding: 5px 6px 5px 7px;
+}
+
+.menu-invite-details {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.menu-invite-email {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.7rem;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-invite-status {
+  width: fit-content;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, transparent);
+  border-radius: 999px;
+  color: var(--muted);
+  padding: 1px 5px;
+  font-size: 0.56rem;
   line-height: 1;
 }
 
-.menu-color-swatches {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+.menu-invite-status.is-accepted {
+  border-color: color-mix(in srgb, var(--accent) 72%, transparent);
+  background: var(--accent);
+  color: #ffffff;
 }
 
-.menu-color-button {
-  width: 22px;
-  height: 22px;
-  border: 1px solid var(--swatch-border, var(--shared-border));
-  border-radius: 999px;
-  background: var(--swatch-bg, var(--shared-card));
-  box-shadow: inset 0 0 0 5px var(--swatch-bg, var(--shared-card));
-  padding: 0;
+.menu-invite-remove {
+  color: var(--danger);
 }
 
-.menu-color-button:hover,
-.menu-color-button:focus-visible {
-  border-color: var(--swatch-accent, var(--accent));
-  outline: 2px solid color-mix(in srgb, var(--swatch-accent, var(--accent)) 22%, transparent);
-  outline-offset: 2px;
-}
+@keyframes menuColorSlideDown {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scaleY(0.96);
+  }
 
-.menu-color-button.is-active {
-  border-color: var(--swatch-accent, var(--accent));
-  background: var(--swatch-accent, var(--accent));
-}
-
-.menu-color-button[data-list-color="default"] {
-  --swatch-bg: var(--shared-card);
-  --swatch-border: var(--shared-border);
-  --swatch-accent: var(--shared-accent);
-}
-
-.menu-color-button[data-list-color="sage"] {
-  --swatch-bg: #eff8f1;
-  --swatch-border: #b8d9bf;
-  --swatch-accent: #57996b;
-}
-
-.menu-color-button[data-list-color="sky"] {
-  --swatch-bg: #eef7ff;
-  --swatch-border: #b9daf6;
-  --swatch-accent: #458cca;
-}
-
-.menu-color-button[data-list-color="amber"] {
-  --swatch-bg: #fff6e8;
-  --swatch-border: #e8c784;
-  --swatch-accent: #bd7d22;
-}
-
-.menu-color-button[data-list-color="slate"] {
-  --swatch-bg: #f2f5f8;
-  --swatch-border: #c5ced8;
-  --swatch-accent: #657383;
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
 }
 
 .inline-empty {
@@ -1825,6 +1959,163 @@ button:focus-visible {
   background: var(--tomorrow-button-bg);
   color: var(--tomorrow-button-text);
   padding: 0 16px;
+}
+
+body.is-compact .list-section {
+  margin: 8px 0;
+}
+
+body.is-compact .list-board {
+  gap: 8px;
+}
+
+body.is-compact .standing-list {
+  border-radius: 15px;
+  padding: 10px;
+}
+
+body.is-compact .standing-list.is-collapsed {
+  padding: 8px 10px;
+}
+
+body.is-compact .list-header {
+  gap: 6px;
+  align-items: center;
+}
+
+body.is-compact .standing-list:not(.is-pinned) > .list-header > .drag-handle,
+body.is-compact .standing-list:not(.is-pinned) .list-toggle {
+  align-self: center;
+  align-items: center;
+}
+
+body.is-compact .drag-handle {
+  height: 18px;
+  border-radius: 5px;
+}
+
+body.is-compact .drag-lines {
+  height: 13px;
+  background-size: 6px 3.6px;
+}
+
+body.is-compact .list-toggle {
+  min-height: 24px;
+}
+
+body.is-compact .list-title {
+  gap: 1px;
+}
+
+body.is-compact .list-name {
+  font-size: 1rem;
+}
+
+body.is-compact .list-scope-label {
+  min-height: 15px;
+  padding: 0 5px;
+  font-size: 0.54rem;
+}
+
+body.is-compact .list-progress-text {
+  font-size: 0.72rem;
+}
+
+body.is-compact .composer {
+  border-radius: 15px;
+  padding: 8px 10px;
+}
+
+body.is-compact .list-form input {
+  height: 20px;
+  min-height: 20px;
+  font-size: 0.82rem;
+  line-height: 1;
+}
+
+body.is-compact .list-form .primary-button {
+  min-height: 20px;
+  padding: 0 13px;
+}
+
+body.is-compact .nested-task-list {
+  gap: 4px;
+  padding-top: 5px;
+}
+
+body.is-compact .task-row,
+body.is-compact .inline-task-form {
+  min-height: 28px;
+  border-radius: 9px;
+  gap: 6px;
+  padding: 3px 8px 3px 3px;
+}
+
+body.is-compact .task-row .drag-handle {
+  height: 18px;
+}
+
+body.is-compact .check,
+body.is-compact .add-task-check {
+  width: 15px;
+  height: 15px;
+}
+
+body.is-compact .task-title {
+  font-size: 0.82rem;
+}
+
+body.is-compact .inline-task-form {
+  margin: 12px 0 6px;
+}
+
+body.is-compact .inline-task-launcher {
+  min-height: 28px;
+  margin: 12px 0 6px 27px;
+  padding: 0 13px;
+  font-size: 0.84rem;
+}
+
+body.is-compact .completed-toggle {
+  padding-top: 6px;
+  font-size: 0.74rem;
+}
+
+body.is-compact .tomorrow-section {
+  border-radius: 16px;
+  padding: 9px 12px;
+}
+
+body.is-compact .tomorrow-toggle span:first-child {
+  font-size: 0.92rem;
+}
+
+body.is-compact .tomorrow-toggle span:last-child {
+  font-size: 0.7rem;
+}
+
+body.is-compact .tomorrow-body {
+  gap: 6px;
+  padding-top: 7px;
+}
+
+body.is-compact .tomorrow-list {
+  gap: 4px;
+}
+
+body.is-compact .tomorrow-item {
+  min-height: 27px;
+  border-radius: 9px;
+  padding: 3px 7px 3px 10px;
+}
+
+body.is-compact .tomorrow-title {
+  font-size: 0.8rem;
+}
+
+body.is-compact .tomorrow-form input,
+body.is-compact .tomorrow-form .primary-button {
+  min-height: 30px;
 }
 
 @media (max-width: 680px) {

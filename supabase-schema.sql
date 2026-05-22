@@ -352,6 +352,54 @@ end;
 
 grant execute on function public.claim_pending_list_invites() to authenticated;
 
+drop function if exists public.remove_list_member_by_email(text, text);
+
+create or replace function public.remove_list_member_by_email(
+  target_list_id text,
+  target_email text
+)
+returns integer
+language plpgsql
+security definer
+set search_path = public
+as '
+declare
+  normalized_email text := lower(trim(coalesce(target_email, '''')));
+  removed_member_count integer := 0;
+  removed_invite_count integer := 0;
+begin
+  if auth.uid() is null then
+    raise exception ''Not signed in'';
+  end if;
+
+  if normalized_email = '''' then
+    raise exception ''Email is required'';
+  end if;
+
+  if not public.is_task_list_owner(target_list_id) then
+    raise exception ''Only the list owner can remove invites'';
+  end if;
+
+  delete from public.list_members
+  using public.profiles
+  where list_members.list_id = target_list_id
+    and profiles.id = list_members.user_id
+    and profiles.email = normalized_email;
+
+  get diagnostics removed_member_count = row_count;
+
+  delete from public.list_invites
+  where list_id = target_list_id
+    and email = normalized_email;
+
+  get diagnostics removed_invite_count = row_count;
+
+  return removed_member_count + removed_invite_count;
+end;
+';
+
+grant execute on function public.remove_list_member_by_email(text, text) to authenticated;
+
 drop policy if exists "Task documents are readable by owner" on public.task_documents;
 drop policy if exists "Task documents are insertable by owner" on public.task_documents;
 drop policy if exists "Task documents are updateable by owner" on public.task_documents;

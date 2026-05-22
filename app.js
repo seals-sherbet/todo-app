@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.12";
+const appVersion = "0.1.13";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -41,6 +41,7 @@ const optionsToggleButton = document.querySelector("#optionsToggleButton");
 const settingsOptions = document.querySelector("#settingsOptions");
 const showProjectsOption = document.querySelector("#showProjectsOption");
 const showTomorrowOption = document.querySelector("#showTomorrowOption");
+const compactModeOption = document.querySelector("#compactModeOption");
 const updateAppButton = document.querySelector("#updateAppButton");
 const viewArchiveButton = document.querySelector("#viewArchiveButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
@@ -92,7 +93,7 @@ const filterLabels = {
 };
 const defaultListColor = "default";
 const listColorOptions = [
-  { value: defaultListColor, label: "Default" },
+  { value: defaultListColor, label: "Red Violet" },
   { value: "sage", label: "Sage" },
   { value: "sky", label: "Sky" },
   { value: "amber", label: "Amber" },
@@ -124,6 +125,7 @@ let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
 let expandedCompletedLists = new Set();
 let activeTaskFormListId = null;
 const taskFormDrafts = new Map();
+const inviteStatusCache = new Map();
 let taskFormPointerActiveUntil = 0;
 let suppressHandleClick = false;
 let todayText = formatTodayDate();
@@ -346,6 +348,9 @@ async function handleTaskBoardClick(event) {
     if (list.collapsed && editingTask?.listId === list.id) {
       editingTask = null;
     }
+    if (list.collapsed) {
+      expandedCompletedLists.delete(list.id);
+    }
     persistLocalListsOnly();
     render();
     return;
@@ -369,11 +374,51 @@ async function handleTaskBoardClick(event) {
     return;
   }
 
+  if (button.dataset.action === "toggle-list-color-panel") {
+    if (isPinnedList(list)) return;
+    openMenu = {
+      type: "list",
+      listId: list.id,
+      taskId: null,
+      colorOpen: !isListColorPanelOpen(list.id)
+    };
+    render();
+    return;
+  }
+
   if (button.dataset.action === "set-list-color") {
     if (isPinnedList(list)) return;
     setListColor(list, button.dataset.listColor);
     openMenu = null;
     persistAndRender({ syncShared: false });
+    return;
+  }
+
+  if (button.dataset.action === "toggle-list-invites-panel") {
+    if (!canShareList(list)) return;
+    const willOpen = !isListInvitesPanelOpen(list.id);
+    openMenu = {
+      type: "list",
+      listId: list.id,
+      taskId: null,
+      invitesOpen: willOpen
+    };
+    render();
+    if (willOpen) {
+      await refreshListInviteStatuses(list, { renderAfter: true });
+    }
+    return;
+  }
+
+  if (button.dataset.action === "refresh-list-invites") {
+    if (!canShareList(list)) return;
+    await refreshListInviteStatuses(list, { renderAfter: true, forceLoading: true });
+    return;
+  }
+
+  if (button.dataset.action === "remove-list-invite") {
+    if (!canShareList(list)) return;
+    await removeListInvite(list, button.dataset.inviteEmail);
     return;
   }
 
@@ -716,6 +761,12 @@ showTomorrowOption.addEventListener("change", () => {
   render();
 });
 
+compactModeOption.addEventListener("change", () => {
+  appOptions.compactMode = compactModeOption.checked;
+  saveAppOptions();
+  render();
+});
+
 settingsOptions.addEventListener("click", (event) => {
   const modeButton = event.target.closest("[data-queue-mode]");
   if (!modeButton) return;
@@ -887,6 +938,7 @@ async function handleAuthSession(session) {
   if (!nextUser) {
     syncUser = null;
     syncLastRemoteUpdatedAt = "";
+    inviteStatusCache.clear();
     clearRemoteSubscription();
     updateSyncUi("Signed out");
     return;
@@ -1300,6 +1352,7 @@ function clearPendingSharedSync() {
   syncPendingAllShared = false;
   syncPendingSharedListIds.clear();
   syncPendingTaskOrderListIds.clear();
+  inviteStatusCache.clear();
 }
 
 async function refreshSyncUser() {
@@ -1804,9 +1857,134 @@ async function shareListByEmail(list) {
   }
 
   list.shared = true;
+  await refreshListInviteStatuses(list);
   persistAndRender({ sharedListIds: [list.id] });
   updateSyncUi("Synced");
   notifyUser(`Shared "${list.name}" with ${email}. They will see it after signing in with that email.`);
+}
+
+function getInviteStatusState(listId) {
+  return inviteStatusCache.get(listId) || {
+    status: "idle",
+    invites: [],
+    error: ""
+  };
+}
+
+function setInviteStatusState(listId, state) {
+  inviteStatusCache.set(listId, {
+    status: state.status || "idle",
+    invites: Array.isArray(state.invites) ? state.invites : [],
+    error: state.error || ""
+  });
+}
+
+async function refreshListInviteStatuses(list, options = {}) {
+  if (!list?.id) return;
+  const { renderAfter = false, forceLoading = false } = options;
+
+  if (!isSupabaseConfigured()) {
+    setInviteStatusState(list.id, { status: "ready", invites: [] });
+    if (renderAfter) render();
+    return;
+  }
+
+  if (!syncClient || !syncUser) {
+    setInviteStatusState(list.id, { status: "ready", invites: [] });
+    if (renderAfter) render();
+    return;
+  }
+
+  if (forceLoading) {
+    setInviteStatusState(list.id, {
+      ...getInviteStatusState(list.id),
+      status: "loading"
+    });
+    if (renderAfter) render();
+  }
+
+  const { data, error } = await syncClient
+    .from("list_invites")
+    .select("email,role,created_at,accepted_at")
+    .eq("list_id", list.id)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    setInviteStatusState(list.id, {
+      status: "error",
+      invites: [],
+      error: error.message || "Invite status could not load."
+    });
+    if (renderAfter) render();
+    return;
+  }
+
+  setInviteStatusState(list.id, {
+    status: "ready",
+    invites: (data || []).map(normalizeInviteStatusRow)
+  });
+
+  if (renderAfter) render();
+}
+
+function normalizeInviteStatusRow(row) {
+  return {
+    email: normalizeEmail(row.email),
+    role: row.role || "editor",
+    createdAt: row.created_at || "",
+    acceptedAt: row.accepted_at || ""
+  };
+}
+
+async function removeListInvite(list, email) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return;
+
+  if (!syncClient || !syncUser) {
+    notifyUser("Sign in before removing an invite.");
+    return;
+  }
+
+  const shouldRemove = askToConfirm(`Remove ${normalizedEmail} from "${list.name}"?`);
+  if (!shouldRemove) return;
+
+  updateSyncUi("Removing invite...");
+  const rpcResult = await syncClient.rpc("remove_list_member_by_email", {
+    target_list_id: list.id,
+    target_email: normalizedEmail
+  });
+
+  if (rpcResult.error && !isMissingRpcError(rpcResult.error)) {
+    updateSyncUi("Invite error");
+    notifyUser(`Could not remove this invite. ${rpcResult.error.message}`);
+    return;
+  }
+
+  if (rpcResult.error && isMissingRpcError(rpcResult.error)) {
+    const invite = getInviteStatusState(list.id).invites.find((item) => item.email === normalizedEmail);
+    if (invite?.acceptedAt) {
+      updateSyncUi("Schema update needed");
+      notifyUser("Accepted members need the updated Supabase sharing helper before they can be removed.");
+      return;
+    }
+
+    const { error } = await syncClient
+      .from("list_invites")
+      .delete()
+      .eq("list_id", list.id)
+      .eq("email", normalizedEmail);
+
+    if (error) {
+      updateSyncUi("Invite error");
+      notifyUser(`Could not remove this invite. ${error.message}`);
+      return;
+    }
+  }
+
+  await refreshListInviteStatuses(list, { renderAfter: true });
+  await refreshSyncNow();
+  updateSyncUi("Synced");
+  notifyUser(`Removed ${normalizedEmail}.`);
 }
 
 async function syncUserProfile() {
@@ -2040,7 +2218,8 @@ function normalizeAppOptions(options = {}) {
     tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily",
     tomorrowModeUpdatedAt: isValidDateValue(options.tomorrowModeUpdatedAt || options.updatedAt)
       ? options.tomorrowModeUpdatedAt || options.updatedAt
-      : ""
+      : "",
+    compactMode: Boolean(options.compactMode)
   };
 }
 
@@ -2222,6 +2401,7 @@ function render() {
   tomorrowSection.hidden = !appOptions.showTomorrow;
   emptyState.hidden = visibleLists.length + (appOptions.showProjects ? visibleProjectLists.length : 0) > 0;
   document.body.classList.toggle("has-no-pinned-footer", !appOptions.showProjects && !appOptions.showTomorrow);
+  document.body.classList.toggle("is-compact", appOptions.compactMode);
 
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
   listBoard.replaceChildren(...visibleLists.map(createListElement));
@@ -2253,6 +2433,7 @@ function renderSettingsMenu() {
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
   showProjectsOption.checked = appOptions.showProjects;
   showTomorrowOption.checked = appOptions.showTomorrow;
+  compactModeOption.checked = appOptions.compactMode;
   settingsOptions.querySelectorAll("[data-queue-mode]").forEach((button) => {
     const isActive = button.dataset.queueMode === appOptions.tomorrowMode;
     button.classList.toggle("is-active", isActive);
@@ -2898,9 +3079,26 @@ function createListMenu(list) {
 
   menu.append(createMenuButton("Details", "toggle-fields", list.showDetails ? `Hide details for ${list.name}` : `Show details for ${list.name}`, list.showDetails));
   if (!isPinnedList(list)) {
-    menu.append(createListColorMenu(list));
+    const colorPanelOpen = isListColorPanelOpen(list.id);
+    const colorPanelId = `list-color-panel-${list.id}`;
+    const colorButton = createMenuButton("Color", "toggle-list-color-panel", `Choose color for ${list.name}`, colorPanelOpen);
+    colorButton.setAttribute("aria-expanded", String(colorPanelOpen));
+    colorButton.setAttribute("aria-controls", colorPanelId);
+    menu.append(colorButton);
+    if (colorPanelOpen) {
+      menu.append(createListColorPanel(list, colorPanelId));
+    }
     if (canShareList(list)) {
       menu.append(createMenuButton("Share", "share-list", `Share ${list.name}`));
+      const invitesPanelOpen = isListInvitesPanelOpen(list.id);
+      const invitesPanelId = `list-invites-panel-${list.id}`;
+      const invitesButton = createMenuButton("Invites", "toggle-list-invites-panel", `View invites for ${list.name}`, invitesPanelOpen);
+      invitesButton.setAttribute("aria-expanded", String(invitesPanelOpen));
+      invitesButton.setAttribute("aria-controls", invitesPanelId);
+      menu.append(invitesButton);
+      if (invitesPanelOpen) {
+        menu.append(createListInvitesPanel(list, invitesPanelId));
+      }
     }
     menu.append(createMenuButton("Edit", "edit-list", `Edit ${list.name}`));
     if (canManageList(list)) {
@@ -2911,37 +3109,125 @@ function createListMenu(list) {
   return menu;
 }
 
-function createListColorMenu(list) {
-  const group = document.createElement("div");
+function createListColorPanel(list, panelId) {
+  const panel = document.createElement("div");
+  panel.className = "menu-color-panel";
+  panel.id = panelId;
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-label", "List color");
+
+  const choices = document.createElement("div");
+  choices.className = "menu-color-choices";
   const selectedColor = getListColor(list);
-  group.className = "menu-color-group";
-  group.setAttribute("role", "group");
-  group.setAttribute("aria-label", "List color");
-
-  const label = document.createElement("span");
-  label.className = "menu-color-label";
-  label.textContent = "Color";
-
-  const swatches = document.createElement("div");
-  swatches.className = "menu-color-swatches";
-
   listColorOptions.forEach((option) => {
-    swatches.append(createListColorButton(option, selectedColor === option.value));
+    choices.append(createListColorChoice(option, selectedColor === option.value));
   });
 
-  group.append(label, swatches);
-  return group;
+  panel.append(choices);
+  return panel;
 }
 
-function createListColorButton(option, active = false) {
-  const button = createActionButton("", "set-list-color", `${option.label} list color`);
-  button.className = "menu-color-button";
+function createListColorChoice(option, active = false) {
+  const button = createActionButton(option.label, "set-list-color", `${option.label} list color`);
+  button.className = "menu-color-choice";
   button.dataset.listColor = option.value;
-  button.title = option.label;
   button.classList.toggle("is-active", active);
   button.setAttribute("role", "menuitemradio");
   button.setAttribute("aria-checked", String(Boolean(active)));
+
+  const swatch = document.createElement("span");
+  swatch.className = "menu-color-swatch";
+  swatch.setAttribute("aria-hidden", "true");
+
+  const label = document.createElement("span");
+  label.textContent = option.label;
+
+  button.replaceChildren(swatch, label);
   return button;
+}
+
+function createListInvitesPanel(list, panelId) {
+  const panel = document.createElement("div");
+  const state = getInviteStatusState(list.id);
+
+  panel.className = "menu-invites-panel";
+  panel.id = panelId;
+  panel.setAttribute("role", "group");
+  panel.setAttribute("aria-label", "Invite status");
+
+  const actions = document.createElement("div");
+  actions.className = "menu-invites-actions";
+
+  const refresh = createActionButton(state.status === "loading" ? "Refreshing..." : "Refresh", "refresh-list-invites", `Refresh invites for ${list.name}`);
+  refresh.className = "menu-invites-refresh";
+  refresh.disabled = state.status === "loading" || !syncClient || !syncUser;
+  actions.append(refresh);
+  panel.append(actions);
+
+  if (!isSupabaseConfigured()) {
+    panel.append(createInviteStatusMessage("Add Supabase settings to view invite status."));
+    return panel;
+  }
+
+  if (!syncUser) {
+    panel.append(createInviteStatusMessage("Sign in to view invite status."));
+    return panel;
+  }
+
+  if (state.status === "loading") {
+    panel.append(createInviteStatusMessage("Loading invites..."));
+    return panel;
+  }
+
+  if (state.status === "error") {
+    panel.append(createInviteStatusMessage(state.error || "Invite status could not load.", true));
+    return panel;
+  }
+
+  if (state.invites.length === 0) {
+    panel.append(createInviteStatusMessage("No invites yet."));
+    return panel;
+  }
+
+  const listElement = document.createElement("div");
+  listElement.className = "menu-invites-list";
+  state.invites.forEach((invite) => {
+    listElement.append(createInviteStatusRow(invite));
+  });
+  panel.append(listElement);
+  return panel;
+}
+
+function createInviteStatusMessage(message, isError = false) {
+  const text = document.createElement("p");
+  text.className = `menu-invites-message${isError ? " is-error" : ""}`;
+  text.textContent = message;
+  return text;
+}
+
+function createInviteStatusRow(invite) {
+  const row = document.createElement("div");
+  row.className = "menu-invite-row";
+
+  const details = document.createElement("div");
+  details.className = "menu-invite-details";
+
+  const email = document.createElement("span");
+  email.className = "menu-invite-email";
+  email.textContent = invite.email;
+
+  const status = document.createElement("span");
+  status.className = `menu-invite-status ${invite.acceptedAt ? "is-accepted" : "is-pending"}`;
+  status.textContent = invite.acceptedAt ? "Accepted" : "Pending";
+
+  details.append(email, status);
+
+  const remove = createActionButton("Remove", "remove-list-invite", `Remove ${invite.email}`);
+  remove.className = "menu-invite-remove";
+  remove.dataset.inviteEmail = invite.email;
+
+  row.append(details, remove);
+  return row;
 }
 
 function createTaskMenu(task, list) {
@@ -3019,6 +3305,14 @@ function toggleHandleMenu(handle) {
 
 function isMenuOpen(type, listId, taskId = null) {
   return openMenu?.type === type && openMenu?.listId === listId && (type !== "task" || openMenu?.taskId === taskId);
+}
+
+function isListColorPanelOpen(listId) {
+  return openMenu?.type === "list" && openMenu?.listId === listId && Boolean(openMenu.colorOpen);
+}
+
+function isListInvitesPanelOpen(listId) {
+  return openMenu?.type === "list" && openMenu?.listId === listId && Boolean(openMenu.invitesOpen);
 }
 
 function finishListRename(form) {
