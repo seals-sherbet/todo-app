@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.13";
+const appVersion = "0.1.14";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -2655,7 +2655,7 @@ function getTaskGroups(list) {
     visiblePreviousCompletedTasks,
     hiddenCompletedCount: showAllCompleted ? 0 : previousCompletedTasks.length,
     isCompletedExpanded: showAllCompleted,
-    showCompletedToggle: filter === "all" && previousCompletedTasks.length > 0
+    showCompletedToggle: ["all", "shared", "private"].includes(filter) && previousCompletedTasks.length > 0
   };
 }
 
