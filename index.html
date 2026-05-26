@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
-    <link rel="stylesheet" href="styles.css?v=0.1.14">
+    <link rel="stylesheet" href="styles.css?v=0.2.0">
   </head>
   <body>
     <main class="app-shell">
@@ -53,11 +53,12 @@
                   </label>
                 </div>
                 <div class="settings-option-group">
-                  <p class="settings-option-label">Tomorrow Queue</p>
-                  <div class="settings-segmented" role="group" aria-label="Tomorrow queue schedule">
-                    <button class="settings-segment" type="button" data-queue-mode="daily">7 days</button>
-                    <button class="settings-segment" type="button" data-queue-mode="weekdays">Mon-Fri</button>
-                  </div>
+                  <p class="settings-option-label">Schedule</p>
+                  <label class="settings-toggle-row">
+                    <span>Weekend mode</span>
+                    <input id="weekendModeOption" type="checkbox">
+                    <span class="settings-switch" aria-hidden="true"></span>
+                  </label>
                 </div>
               </div>
               <div class="settings-detail" role="presentation">
@@ -185,6 +186,6 @@
 
     <script src="sync-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=0.1.14"></script>
+    <script src="app.js?v=0.2.0"></script>
   </body>
 </html>

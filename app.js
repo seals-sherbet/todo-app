@@ -24,7 +24,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.1.14";
+const appVersion = "0.2.0";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -42,6 +42,7 @@ const settingsOptions = document.querySelector("#settingsOptions");
 const showProjectsOption = document.querySelector("#showProjectsOption");
 const showTomorrowOption = document.querySelector("#showTomorrowOption");
 const compactModeOption = document.querySelector("#compactModeOption");
+const weekendModeOption = document.querySelector("#weekendModeOption");
 const updateAppButton = document.querySelector("#updateAppButton");
 const viewArchiveButton = document.querySelector("#viewArchiveButton");
 const copyArchiveButton = document.querySelector("#copyArchiveButton");
@@ -100,6 +101,16 @@ const listColorOptions = [
   { value: "slate", label: "Slate" }
 ];
 const listColorValues = new Set(listColorOptions.map((option) => option.value));
+const repeatOffValue = "off";
+const repeatOptions = [
+  { value: "daily", label: "Daily" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "weekly", label: "Weekly" },
+  { value: "biweekly", label: "Biweekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "yearly", label: "Yearly" }
+];
+const repeatOptionValues = new Set(repeatOptions.map((option) => option.value));
 
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
@@ -482,6 +493,37 @@ async function handleTaskBoardClick(event) {
   const task = list.tasks.find((item) => item.id === taskElement?.dataset.taskId);
   if (!task) return;
 
+  if (button.dataset.action === "toggle-task-repeat-panel") {
+    if (!isTodayList(list)) return;
+    openMenu = {
+      type: "task",
+      listId: list.id,
+      taskId: task.id,
+      repeatOpen: !isTaskRepeatPanelOpen(list.id, task.id)
+    };
+    render();
+    return;
+  }
+
+  if (button.dataset.action === "set-task-repeat") {
+    if (!isTodayList(list)) return;
+    setTaskRepeat(task, button.dataset.repeatMode);
+    openMenu = null;
+    persistAndRender({ syncShared: false });
+    return;
+  }
+
+  if (button.dataset.action === "save-custom-repeat") {
+    if (!isTodayList(list)) return;
+    const input = button.closest(".menu-repeat-custom")?.querySelector(".menu-repeat-day-input");
+    setTaskRepeat(task, "monthly-date", {
+      dayOfMonth: normalizeRepeatDay(input?.value)
+    });
+    openMenu = null;
+    persistAndRender({ syncShared: false });
+    return;
+  }
+
   if (button.dataset.action === "toggle-task") {
     const wasCompleted = task.completed;
     const previousCompletedAt = task.completedAt;
@@ -764,6 +806,11 @@ showTomorrowOption.addEventListener("change", () => {
 compactModeOption.addEventListener("change", () => {
   appOptions.compactMode = compactModeOption.checked;
   saveAppOptions();
+  render();
+});
+
+weekendModeOption.addEventListener("change", () => {
+  setAccountTomorrowMode(weekendModeOption.checked ? "weekdays" : "daily");
   render();
 });
 
@@ -2434,6 +2481,7 @@ function renderSettingsMenu() {
   showProjectsOption.checked = appOptions.showProjects;
   showTomorrowOption.checked = appOptions.showTomorrow;
   compactModeOption.checked = appOptions.compactMode;
+  weekendModeOption.checked = appOptions.tomorrowMode === "weekdays";
   settingsOptions.querySelectorAll("[data-queue-mode]").forEach((button) => {
     const isActive = button.dataset.queueMode === appOptions.tomorrowMode;
     button.classList.toggle("is-active", isActive);
@@ -2677,11 +2725,17 @@ function createListScopeLabel(list) {
   return label;
 }
 
+function getListDisplayName(list) {
+  if (isTodayList(list) && isWeekendModeToday()) return "Weekend";
+  return list.name;
+}
+
 function createListElement(list) {
   const item = document.createElement("li");
   const taskGroups = getTaskGroups(list);
   const openTasks = list.tasks.filter((task) => !task.completed).length;
   const bodyId = `list-body-${list.id}`;
+  const listDisplayName = getListDisplayName(list);
 
   item.className = `standing-list${list.collapsed ? " is-collapsed" : ""}`;
   if (isTodayList(list)) {
@@ -2702,7 +2756,7 @@ function createListElement(list) {
   const header = document.createElement("div");
   header.className = "list-header";
 
-  const dragHandle = createDragHandle("list", isPinnedList(list) ? `${list.name} options` : `Drag ${list.name}`, {
+  const dragHandle = createDragHandle("list", isPinnedList(list) ? `${listDisplayName} options` : `Drag ${listDisplayName}`, {
     draggable: !isPinnedList(list),
     fixed: isPinnedList(list),
     open: isMenuOpen("list", list.id)
@@ -2732,7 +2786,7 @@ function createListElement(list) {
 
     const name = document.createElement("span");
     name.className = "list-name";
-    name.textContent = list.name;
+    name.textContent = listDisplayName;
     titleLine.append(name);
     const scopeLabel = createListScopeLabel(list);
     if (scopeLabel) {
@@ -2911,6 +2965,7 @@ function createTaskElement(task, list, variant = "") {
       meta.append(createDuePill(task.due));
     }
   }
+  const repeatBadge = task.repeat?.enabled ? createRepeatBadge(task.repeat) : null;
 
   if (isEditing) {
     body.append(createTaskRenameForm(task, list));
@@ -2925,6 +2980,9 @@ function createTaskElement(task, list, variant = "") {
   }
 
   item.append(dragHandle, check, body);
+  if (repeatBadge) {
+    item.append(repeatBadge);
+  }
   if (isMenuOpen("task", list.id, task.id)) {
     item.append(createTaskMenu(task, list));
   }
@@ -2986,6 +3044,33 @@ function returnTaskToPreviousCompleted(listId, task, index) {
   markTaskUpdated(restoredTask);
   insertTaskAt(currentList, restoredTask, index);
   persistAndRender({ sharedListIds: [listId] });
+}
+
+function setTaskRepeat(task, mode, options = {}) {
+  if (!task) return;
+
+  if (!mode || mode === repeatOffValue) {
+    task.repeat = null;
+    markTaskUpdated(task);
+    return;
+  }
+
+  const todayKey = getDateKey();
+  const dayOfMonth = options.dayOfMonth || new Date().getDate();
+  const repeat = {
+    mode,
+    dayOfMonth,
+    anchorDate: todayKey
+  };
+
+  task.repeat = normalizeTaskRepeat({
+    enabled: true,
+    mode,
+    anchorDate: todayKey,
+    dayOfMonth,
+    lastRunDate: isRepeatDueOnDate(repeat, todayKey) ? todayKey : ""
+  });
+  markTaskUpdated(task);
 }
 
 function getTaskCompletionDateKey(task) {
@@ -3230,6 +3315,52 @@ function createInviteStatusRow(invite) {
   return row;
 }
 
+function isTaskRepeatPanelOpen(listId, taskId) {
+  return isMenuOpen("task", listId, taskId) && Boolean(openMenu?.repeatOpen);
+}
+
+function createRepeatPanel(task) {
+  const panel = document.createElement("div");
+  panel.className = "menu-repeat-panel";
+
+  const choices = document.createElement("div");
+  choices.className = "menu-repeat-choices";
+  choices.append(createRepeatChoice(repeatOffValue, "No repeat", !task.repeat?.enabled));
+  repeatOptions.forEach((option) => {
+    choices.append(createRepeatChoice(option.value, option.label, task.repeat?.mode === option.value));
+  });
+  panel.append(choices);
+
+  const custom = document.createElement("div");
+  custom.className = "menu-repeat-custom";
+
+  const input = document.createElement("input");
+  input.className = "menu-repeat-day-input";
+  input.type = "number";
+  input.min = "1";
+  input.max = "31";
+  input.inputMode = "numeric";
+  input.value = task.repeat?.mode === "monthly-date"
+    ? String(task.repeat.dayOfMonth || new Date().getDate())
+    : String(new Date().getDate());
+  input.setAttribute("aria-label", "Repeat day of month");
+
+  const save = createActionButton("Monthly day", "save-custom-repeat", "Repeat monthly on this day");
+  save.className = `menu-link menu-repeat-custom-save${task.repeat?.mode === "monthly-date" ? " is-active" : ""}`;
+
+  custom.append(input, save);
+  panel.append(custom);
+  return panel;
+}
+
+function createRepeatChoice(value, label, active = false) {
+  const button = createActionButton(label, "set-task-repeat", label);
+  button.className = "menu-link menu-repeat-choice";
+  button.dataset.repeatMode = value;
+  button.classList.toggle("is-active", active);
+  return button;
+}
+
 function createTaskMenu(task, list) {
   const menu = document.createElement("div");
   menu.className = "handle-menu task-handle-menu";
@@ -3239,6 +3370,10 @@ function createTaskMenu(task, list) {
     createMenuButton("Delete", "delete-task", `Delete ${task.title}`, false, true)
   );
   if (isTodayList(list)) {
+    menu.append(createMenuButton("Repeat", "toggle-task-repeat-panel", `Repeat ${task.title}`, isTaskRepeatPanelOpen(list.id, task.id)));
+    if (isTaskRepeatPanelOpen(list.id, task.id)) {
+      menu.append(createRepeatPanel(task));
+    }
     menu.append(createMenuButton("Bump to Tomorrow", "move-task-tomorrow", `Bump ${task.title} to Tomorrow`));
   }
   return menu;
@@ -3263,6 +3398,37 @@ function createPriorityPill(priority) {
   pill.className = `pill ${priority}`;
   pill.textContent = priority === "high" ? "High" : priority === "low" ? "Low" : "Normal";
   return pill;
+}
+
+function formatRepeatLabel(repeat) {
+  if (!repeat?.enabled) return "";
+  if (repeat.mode === "monthly-date") return `Repeats monthly on ${formatOrdinal(repeat.dayOfMonth || 1)}`;
+  const option = repeatOptions.find((item) => item.value === repeat.mode);
+  return option ? `Repeats ${option.label.toLowerCase()}` : "Repeats";
+}
+
+function createRepeatBadge(repeat) {
+  const badge = document.createElement("span");
+  badge.className = "task-repeat-badge";
+  badge.textContent = formatRepeatBadgeLabel(repeat);
+  badge.title = formatRepeatLabel(repeat);
+  return badge;
+}
+
+function formatRepeatBadgeLabel(repeat) {
+  if (!repeat?.enabled) return "";
+  if (repeat.mode === "monthly-date") return `Monthly ${formatOrdinal(repeat.dayOfMonth || 1)}`;
+  const option = repeatOptions.find((item) => item.value === repeat.mode);
+  return option?.label || "Repeat";
+}
+
+function formatOrdinal(day) {
+  const value = Number(day);
+  if (!Number.isInteger(value)) return "";
+  const suffix = value % 100 >= 11 && value % 100 <= 13
+    ? "th"
+    : ["th", "st", "nd", "rd"][Math.min(value % 10, 4)] || "th";
+  return `${value}${suffix}`;
 }
 
 function createDuePill(due) {
@@ -3436,6 +3602,7 @@ function createTask(title, options = {}) {
     completed,
     completedAt: options.completedAt || (completed ? createdAt : ""),
     previousCompletedAt: options.previousCompletedAt || "",
+    repeat: normalizeTaskRepeat(options.repeat || options.recurrence),
     createdAt,
     updatedAt
   };
@@ -3506,6 +3673,26 @@ function normalizeSharedListOrder(order) {
 
 function normalizeTask(task) {
   return createTask(task.title || "Untitled task", task);
+}
+
+function normalizeTaskRepeat(repeat) {
+  if (!repeat || repeat.enabled === false || repeat.mode === repeatOffValue) return null;
+  const mode = repeatOptionValues.has(repeat.mode) || repeat.mode === "monthly-date" ? repeat.mode : "";
+  if (!mode) return null;
+
+  return {
+    enabled: true,
+    mode,
+    anchorDate: isDateKey(repeat.anchorDate) ? repeat.anchorDate : getDateKey(),
+    dayOfMonth: normalizeRepeatDay(repeat.dayOfMonth || new Date().getDate()),
+    lastRunDate: isDateKey(repeat.lastRunDate) ? repeat.lastRunDate : ""
+  };
+}
+
+function normalizeRepeatDay(day) {
+  const value = Number.parseInt(day, 10);
+  if (!Number.isInteger(value)) return new Date().getDate();
+  return Math.min(31, Math.max(1, value));
 }
 
 function cloneList(list) {
@@ -4542,6 +4729,14 @@ function moveTaskToOpenBottom(list, taskId) {
   list.tasks.push(task);
 }
 
+function moveTaskToOpenTop(list, taskId) {
+  const sourceIndex = list.tasks.findIndex((task) => task.id === taskId);
+  if (sourceIndex < 0) return;
+
+  const [task] = list.tasks.splice(sourceIndex, 1);
+  list.tasks.unshift(task);
+}
+
 function isEditingTask(listId, taskId) {
   return editingTask?.listId === listId && editingTask?.taskId === taskId;
 }
@@ -4587,6 +4782,31 @@ function cleanupDragState() {
   dragState = null;
 }
 
+function rollRepeatingTasksIntoToday(todayList, todayKey) {
+  let changed = false;
+  const reopenedTaskIds = [];
+
+  todayList.tasks.forEach((task) => {
+    if (!task.repeat?.enabled) return;
+    if (!isRepeatDueOnDate(task.repeat, todayKey)) return;
+    if (task.repeat.lastRunDate === todayKey) return;
+
+    if (task.completed) {
+      task.completed = false;
+      task.completedAt = "";
+      delete task.previousCompletedAt;
+      reopenedTaskIds.push(task.id);
+    }
+
+    task.repeat.lastRunDate = todayKey;
+    markTaskUpdated(task);
+    changed = true;
+  });
+
+  reopenedTaskIds.reverse().forEach((taskId) => moveTaskToOpenTop(todayList, taskId));
+  return changed;
+}
+
 function rollTomorrowQueueIntoToday(options = {}) {
   const dateChanged = refreshTodayText();
 
@@ -4600,19 +4820,21 @@ function rollTomorrowQueueIntoToday(options = {}) {
     persistArchiveState();
   }
 
+  lists = ensureTodayList(lists);
+  const todayList = lists.find(isTodayList);
+  const repeatingChanged = todayList ? rollRepeatingTasksIntoToday(todayList, todayKey) : false;
+
   const dueItems = shouldRollTomorrowQueueToday()
     ? tomorrowQueue.filter((item) => item.targetDate <= todayKey)
     : [];
   if (dueItems.length === 0) {
-    if (dayChanged) {
+    if (dayChanged || repeatingChanged) {
       persistLists({ syncShared: false });
     }
-    if (options.renderAfter && (dateChanged || dayChanged)) render();
+    if (options.renderAfter && (dateChanged || dayChanged || repeatingChanged)) render();
     return;
   }
 
-  lists = ensureTodayList(lists);
-  const todayList = lists.find(isTodayList);
   if (!todayList) return;
   todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
 
@@ -4749,7 +4971,7 @@ function archiveCompletedTodayTasks(archiveDateKey) {
   const todayList = lists.find(isTodayList);
   if (!todayList) return false;
 
-  const completedTasks = todayList.tasks.filter((task) => task.completed);
+  const completedTasks = todayList.tasks.filter((task) => task.completed && getTaskCompletionDateKey(task) === archiveDateKey);
   if (completedTasks.length === 0) return false;
   const archivedAt = new Date().toISOString();
 
@@ -4760,8 +4982,9 @@ function archiveCompletedTodayTasks(archiveDateKey) {
   ].join("\n");
 
   completedArchiveText = appendArchiveText(completedArchiveText, archiveBlock);
-  completedTasks.forEach((task) => rememberPrivateTaskDeletion(todayList, task, archivedAt));
-  todayList.tasks = todayList.tasks.filter((task) => !task.completed);
+  const completedTasksToRemove = completedTasks.filter((task) => !task.repeat?.enabled);
+  completedTasksToRemove.forEach((task) => rememberPrivateTaskDeletion(todayList, task, archivedAt));
+  todayList.tasks = todayList.tasks.filter((task) => !task.completed || task.repeat?.enabled);
   return true;
 }
 
@@ -4901,15 +5124,74 @@ function shouldRollTomorrowQueueToday() {
   return appOptions.tomorrowMode !== "weekdays" || isWeekday(new Date());
 }
 
+function isWeekendModeToday() {
+  return appOptions.tomorrowMode === "weekdays" && isWeekend(new Date());
+}
+
 function isWeekday(date) {
   const day = date.getDay();
   return day >= 1 && day <= 5;
+}
+
+function isWeekend(date) {
+  const day = date.getDay();
+  return day === 0 || day === 6;
+}
+
+function isRepeatDueOnDate(repeat, dateKey) {
+  if (!repeat?.mode || !isDateKey(dateKey)) return false;
+
+  const date = parseDateKey(dateKey);
+  if (!date) return false;
+
+  if (repeat.mode === "daily") return true;
+  if (repeat.mode === "weekdays") return isWeekday(date);
+
+  const anchorDate = parseDateKey(repeat.anchorDate) || date;
+  const daysSinceAnchor = getWholeDaysBetween(anchorDate, date);
+
+  if (repeat.mode === "weekly") return daysSinceAnchor >= 0 && daysSinceAnchor % 7 === 0;
+  if (repeat.mode === "biweekly") return daysSinceAnchor >= 0 && daysSinceAnchor % 14 === 0;
+  if (repeat.mode === "monthly") return date.getDate() === getSafeMonthDay(date, anchorDate.getDate());
+  if (repeat.mode === "monthly-date") return date.getDate() === getSafeMonthDay(date, repeat.dayOfMonth || 1);
+  if (repeat.mode === "yearly") {
+    const targetMonth = anchorDate.getMonth();
+    if (date.getMonth() !== targetMonth) return false;
+    return date.getDate() === getSafeMonthDay(date, anchorDate.getDate());
+  }
+
+  return false;
+}
+
+function getSafeMonthDay(date, preferredDay) {
+  const day = normalizeRepeatDay(preferredDay);
+  return Math.min(day, getLastDayOfMonth(date));
+}
+
+function getLastDayOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+}
+
+function getWholeDaysBetween(startDate, endDate) {
+  const start = Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate());
+  const end = Date.UTC(endDate.getFullYear(), endDate.getMonth(), endDate.getDate());
+  return Math.round((end - start) / 86400000);
 }
 
 function getTomorrowDateKey(date = new Date()) {
   const tomorrow = new Date(date);
   tomorrow.setDate(tomorrow.getDate() + 1);
   return getDateKey(tomorrow);
+}
+
+function parseDateKey(dateKey) {
+  const [year, month, day] = String(dateKey || "").split("-").map(Number);
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
+
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day
+    ? date
+    : null;
 }
 
 function getOrCreateDeviceId() {

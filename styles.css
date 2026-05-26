@@ -1256,7 +1256,7 @@ button:focus-visible {
 .task-row {
   position: relative;
   display: grid;
-  grid-template-columns: 16px 16px minmax(0, 1fr);
+  grid-template-columns: 16px 16px minmax(0, 1fr) max-content;
   gap: 7px;
   align-items: center;
   min-height: 32px;
@@ -1400,6 +1400,24 @@ button:focus-visible {
   font-weight: 500;
 }
 
+.task-repeat-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-self: end;
+  max-width: 86px;
+  min-height: 18px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--line));
+  color: var(--accent-strong);
+  overflow: hidden;
+  padding: 0 6px;
+  font-size: 0.66rem;
+  font-weight: 400;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .task-action {
   min-width: 34px;
   padding: 0 8px;
@@ -1476,6 +1494,10 @@ button:focus-visible {
 .task-row .handle-menu {
   left: 22px;
   top: 27px;
+}
+
+.task-handle-menu {
+  min-width: 146px;
 }
 
 .standing-list.is-project-pinned .handle-menu {
@@ -1596,6 +1618,51 @@ button:focus-visible {
 .menu-color-choice[data-list-color="slate"] {
   --swatch-bg: #657383;
   --swatch-border: #465565;
+}
+
+.menu-repeat-panel {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 4px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-strong) 74%, var(--line));
+  padding: 6px;
+  animation: menuColorSlideDown 150ms ease;
+  transform-origin: top;
+}
+
+.menu-repeat-choices {
+  display: grid;
+  gap: 2px;
+}
+
+.menu-repeat-choice {
+  font-weight: 500;
+}
+
+.menu-repeat-custom {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 4px;
+  align-items: center;
+  padding: 2px 0 0;
+}
+
+.menu-repeat-day-input {
+  min-height: 24px;
+  width: 100%;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--panel) 84%, var(--line));
+  color: var(--text);
+  padding: 0 5px;
+  font-size: 0.72rem;
+  font-weight: 400;
+}
+
+.menu-repeat-custom-save {
+  min-height: 24px;
 }
 
 .menu-invites-panel {
@@ -2065,6 +2132,13 @@ body.is-compact .task-title {
   font-size: 0.82rem;
 }
 
+body.is-compact .task-repeat-badge {
+  max-width: 74px;
+  min-height: 16px;
+  padding: 0 5px;
+  font-size: 0.62rem;
+}
+
 body.is-compact .inline-task-form {
   margin: 12px 0 6px;
 }
@@ -2168,7 +2242,7 @@ body.is-compact .tomorrow-form .primary-button {
   }
 
   .task-row {
-    grid-template-columns: 16px 16px minmax(0, 1fr);
+    grid-template-columns: 16px 16px minmax(0, 1fr) max-content;
   }
 
   .inline-task-form {
