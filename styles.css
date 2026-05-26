@@ -2167,10 +2167,12 @@ button:focus-visible {
   grid-template-columns: minmax(0, 1fr) 134px auto;
   gap: 6px;
   align-items: end;
+  position: relative;
   margin-top: 8px;
 }
 
-.scheduled-form input {
+.scheduled-form input,
+.scheduled-date-button {
   min-height: 34px;
   border-radius: 999px;
   border-color: var(--tomorrow-line);
@@ -2180,11 +2182,23 @@ button:focus-visible {
   font-size: 0.86rem;
 }
 
+.scheduled-date-button {
+  border-style: solid;
+  border-width: 1px;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.scheduled-date-button[aria-expanded="true"] {
+  border-color: color-mix(in srgb, var(--tomorrow-accent) 62%, var(--tomorrow-line));
+}
+
 .scheduled-form input::placeholder {
   color: var(--tomorrow-placeholder);
 }
 
-#scheduledDateInput {
+.scheduled-date-button {
   padding: 0 8px 0 10px;
   font-size: 0.74rem;
 }
@@ -2198,6 +2212,88 @@ button:focus-visible {
   background: var(--tomorrow-button-bg);
   color: var(--tomorrow-button-text);
   padding: 0 16px;
+}
+
+.scheduled-date-picker {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 90;
+  width: min(278px, 100%);
+  border: 1px solid var(--tomorrow-line);
+  border-radius: 14px;
+  background: var(--tomorrow-bg);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.22);
+  color: var(--tomorrow-text);
+  padding: 10px;
+}
+
+.scheduled-date-picker-header {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) 30px;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.scheduled-date-nav {
+  min-height: 30px;
+  border: 1px solid color-mix(in srgb, var(--tomorrow-line) 78%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--tomorrow-row) 74%, transparent);
+  color: var(--tomorrow-blue);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.scheduled-date-month {
+  overflow: hidden;
+  color: var(--tomorrow-text);
+  font-size: 0.86rem;
+  line-height: 1.1;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.scheduled-date-weekdays,
+.scheduled-date-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 3px;
+}
+
+.scheduled-date-weekdays {
+  margin-bottom: 4px;
+  color: var(--tomorrow-muted);
+  font-size: 0.6rem;
+  text-align: center;
+}
+
+.scheduled-date-day {
+  display: grid;
+  min-height: 30px;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--tomorrow-text);
+  font-size: 0.78rem;
+  line-height: 1;
+}
+
+.scheduled-date-day.is-outside-month {
+  color: color-mix(in srgb, var(--tomorrow-muted) 62%, transparent);
+}
+
+.scheduled-date-day.is-today {
+  border-color: color-mix(in srgb, var(--tomorrow-accent) 44%, transparent);
+}
+
+.scheduled-date-day.is-selected {
+  border-color: var(--tomorrow-button-bg);
+  background: var(--tomorrow-button-bg);
+  color: var(--tomorrow-button-text);
 }
 
 :root[data-theme="dark"] .tomorrow-section {
@@ -2620,7 +2716,7 @@ body.is-compact .scheduled-form input {
   font-size: 0.8rem;
 }
 
-body.is-compact #scheduledDateInput {
+body.is-compact .scheduled-date-button {
   padding: 0 7px 0 9px;
   font-size: 0.72rem;
 }
@@ -2642,15 +2738,17 @@ body.is-compact .scheduled-form .primary-button {
   }
 
   .footer-tray .scheduled-form input,
-  body.is-compact .footer-tray .scheduled-form input {
+  .footer-tray .scheduled-date-button,
+  body.is-compact .footer-tray .scheduled-form input,
+  body.is-compact .footer-tray .scheduled-date-button {
     min-height: 36px;
     padding: 0 14px;
     font-size: 16px;
     line-height: 1.1;
   }
 
-  .footer-tray #scheduledDateInput,
-  body.is-compact .footer-tray #scheduledDateInput {
+  .footer-tray .scheduled-date-button,
+  body.is-compact .footer-tray .scheduled-date-button {
     width: 100%;
     max-width: 190px;
     min-width: 0;

@@ -26,7 +26,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.5";
+const appVersion = "0.2.6";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -93,6 +93,10 @@ const scheduledList = document.querySelector("#scheduledList");
 const scheduledForm = document.querySelector("#scheduledForm");
 const scheduledInput = document.querySelector("#scheduledInput");
 const scheduledDateInput = document.querySelector("#scheduledDateInput");
+const scheduledDateButton = document.querySelector("#scheduledDateButton");
+const scheduledDatePicker = document.querySelector("#scheduledDatePicker");
+const scheduledDatePickerLabel = document.querySelector("#scheduledDatePickerLabel");
+const scheduledDateGrid = document.querySelector("#scheduledDateGrid");
 const tomorrowList = document.querySelector("#tomorrowList");
 const tomorrowForm = document.querySelector("#tomorrowForm");
 const tomorrowInput = document.querySelector("#tomorrowInput");
@@ -148,6 +152,8 @@ let editingListId = null;
 let editingTask = null;
 let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
 let activeFooterTab = localStorage.getItem(footerTabKey) ?? (tomorrowCollapsed ? "" : "tomorrow");
+let scheduledDatePickerOpen = false;
+let scheduledDatePickerViewDate = null;
 let expandedCompletedLists = new Set();
 let activeTaskFormListId = null;
 const taskFormDrafts = new Map();
@@ -644,6 +650,10 @@ document.addEventListener("click", (event) => {
 
   collapseActiveTaskFormFromOutsideClick(event);
 
+  if (scheduledDatePickerOpen && !event.target.closest("#scheduledDatePicker, #scheduledDateButton")) {
+    closeScheduledDatePicker();
+  }
+
   if (!openMenu) return;
   if (event.target.closest("[data-menu-type], .handle-menu")) return;
 
@@ -743,7 +753,7 @@ scheduledForm?.addEventListener("submit", (event) => {
 
   scheduledQueue.push(createScheduledQueueItem(title, { targetDate }));
   scheduledForm.reset();
-  scheduledDateInput.value = getTomorrowDateKey();
+  setScheduledDateValue(getTomorrowDateKey());
   scheduledInput.focus();
   persistScheduledQueue();
   rollScheduledQueueIntoToday({ renderAfter: true });
@@ -755,6 +765,31 @@ scheduledForm?.addEventListener("keydown", (event) => {
 
   event.preventDefault();
   scheduledForm.requestSubmit();
+});
+
+scheduledDateButton?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (scheduledDatePickerOpen) {
+    closeScheduledDatePicker();
+    return;
+  }
+
+  openScheduledDatePicker();
+});
+
+scheduledDatePicker?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const navButton = event.target.closest("[data-scheduled-date-nav]");
+  if (navButton) {
+    moveScheduledDatePickerMonth(navButton.dataset.scheduledDateNav === "next" ? 1 : -1);
+    return;
+  }
+
+  const dayButton = event.target.closest("[data-scheduled-date]");
+  if (!dayButton) return;
+
+  setScheduledDateValue(dayButton.dataset.scheduledDate);
+  closeScheduledDatePicker();
 });
 
 scheduledList?.addEventListener("click", (event) => {
@@ -833,6 +868,10 @@ document.addEventListener("keydown", (event) => {
   if (!archiveDialog.hidden) {
     closeArchiveDialog();
     return;
+  }
+
+  if (scheduledDatePickerOpen) {
+    closeScheduledDatePicker();
   }
 
   if (filterMenuOpen) {
@@ -2805,7 +2844,7 @@ function renderTomorrowQueue(options = {}) {
 
 function renderScheduledQueue(options = {}) {
   const { scrollToBottom = false } = options;
-  scheduledDateInput.value ||= getTomorrowDateKey();
+  ensureScheduledDateValue();
   scheduledCount.textContent = String(scheduledQueue.length);
 
   if (scheduledQueue.length === 0) {
@@ -2824,6 +2863,90 @@ function renderScheduledQueue(options = {}) {
       scheduledList.scrollTop = scheduledList.scrollHeight;
     });
   }
+}
+
+function ensureScheduledDateValue() {
+  const dateKey = isDateKey(scheduledDateInput?.value) ? scheduledDateInput.value : getTomorrowDateKey();
+  setScheduledDateValue(dateKey, { renderPicker: false });
+}
+
+function setScheduledDateValue(dateKey, options = {}) {
+  const { renderPicker = true } = options;
+  const nextDateKey = isDateKey(dateKey) ? dateKey : getTomorrowDateKey();
+  if (scheduledDateInput) scheduledDateInput.value = nextDateKey;
+  if (scheduledDateButton) scheduledDateButton.textContent = formatScheduledDateButton(nextDateKey);
+  scheduledDatePickerViewDate = getMonthStart(parseDateKey(nextDateKey) || new Date());
+  if (renderPicker) renderScheduledDatePicker();
+}
+
+function openScheduledDatePicker() {
+  ensureScheduledDateValue();
+  scheduledDatePickerOpen = true;
+  scheduledDatePicker.hidden = false;
+  scheduledDateButton.setAttribute("aria-expanded", "true");
+  renderScheduledDatePicker();
+}
+
+function closeScheduledDatePicker() {
+  scheduledDatePickerOpen = false;
+  if (scheduledDatePicker) scheduledDatePicker.hidden = true;
+  if (scheduledDateButton) scheduledDateButton.setAttribute("aria-expanded", "false");
+}
+
+function moveScheduledDatePickerMonth(offset) {
+  const current = scheduledDatePickerViewDate || getMonthStart(parseDateKey(scheduledDateInput?.value) || new Date());
+  scheduledDatePickerViewDate = new Date(current.getFullYear(), current.getMonth() + offset, 1);
+  renderScheduledDatePicker();
+}
+
+function renderScheduledDatePicker() {
+  if (!scheduledDatePicker || !scheduledDatePickerLabel || !scheduledDateGrid) return;
+  const selectedDateKey = isDateKey(scheduledDateInput?.value) ? scheduledDateInput.value : getTomorrowDateKey();
+  const selectedDate = parseDateKey(selectedDateKey) || new Date();
+  const viewDate = scheduledDatePickerViewDate || getMonthStart(selectedDate);
+  scheduledDatePickerViewDate = getMonthStart(viewDate);
+  scheduledDatePickerLabel.textContent = new Intl.DateTimeFormat(undefined, {
+    month: "long",
+    year: "numeric"
+  }).format(scheduledDatePickerViewDate);
+
+  const firstVisibleDate = new Date(scheduledDatePickerViewDate);
+  firstVisibleDate.setDate(1 - firstVisibleDate.getDay());
+  const todayKey = getDateKey();
+  const days = [];
+
+  for (let index = 0; index < 42; index += 1) {
+    const date = new Date(firstVisibleDate);
+    date.setDate(firstVisibleDate.getDate() + index);
+    const dateKey = getDateKey(date);
+    const button = document.createElement("button");
+    button.className = "scheduled-date-day";
+    button.type = "button";
+    button.dataset.scheduledDate = dateKey;
+    button.textContent = String(date.getDate());
+    button.setAttribute("aria-label", formatScheduledDateButton(dateKey));
+    button.classList.toggle("is-outside-month", date.getMonth() !== scheduledDatePickerViewDate.getMonth());
+    button.classList.toggle("is-today", dateKey === todayKey);
+    button.classList.toggle("is-selected", dateKey === selectedDateKey);
+    if (dateKey === selectedDateKey) button.setAttribute("aria-current", "date");
+    days.push(button);
+  }
+
+  scheduledDateGrid.replaceChildren(...days);
+}
+
+function getMonthStart(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function formatScheduledDateButton(dateKey) {
+  const date = parseDateKey(dateKey);
+  if (!date) return "Choose date";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric"
+  }).format(date);
 }
 
 function scrollTomorrowQueueToBottom() {

@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
-    <link rel="stylesheet" href="styles.css?v=0.2.5">
+    <link rel="stylesheet" href="styles.css?v=0.2.6">
   </head>
   <body>
     <main class="app-shell">
@@ -151,8 +151,26 @@
           <ul class="scheduled-list" id="scheduledList"></ul>
           <form class="scheduled-form" id="scheduledForm" autocomplete="off">
             <input id="scheduledInput" name="title" type="text" placeholder="Add scheduled" aria-label="Add scheduled task" required maxlength="120">
-            <input id="scheduledDateInput" name="targetDate" type="date" aria-label="Scheduled date" required>
+            <input id="scheduledDateInput" name="targetDate" type="hidden" required>
+            <button class="scheduled-date-button" id="scheduledDateButton" type="button" aria-haspopup="dialog" aria-expanded="false" aria-controls="scheduledDatePicker">Tomorrow</button>
             <button class="primary-button" type="submit">Add</button>
+            <div class="scheduled-date-picker" id="scheduledDatePicker" role="dialog" aria-label="Choose scheduled date" hidden>
+              <div class="scheduled-date-picker-header">
+                <button class="scheduled-date-nav" type="button" data-scheduled-date-nav="previous" aria-label="Previous month">‹</button>
+                <span class="scheduled-date-month" id="scheduledDatePickerLabel"></span>
+                <button class="scheduled-date-nav" type="button" data-scheduled-date-nav="next" aria-label="Next month">›</button>
+              </div>
+              <div class="scheduled-date-weekdays" aria-hidden="true">
+                <span>Sun</span>
+                <span>Mon</span>
+                <span>Tue</span>
+                <span>Wed</span>
+                <span>Thu</span>
+                <span>Fri</span>
+                <span>Sat</span>
+              </div>
+              <div class="scheduled-date-grid" id="scheduledDateGrid"></div>
+            </div>
           </form>
         </section>
       </section>
@@ -208,6 +226,6 @@
 
     <script src="sync-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=0.2.5"></script>
+    <script src="app.js?v=0.2.6"></script>
   </body>
 </html>
