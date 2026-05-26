@@ -2629,6 +2629,26 @@ body.is-compact .scheduled-form .primary-button {
   padding: 0 12px;
 }
 
+@media (max-width: 860px) {
+  .footer-tray .scheduled-form {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .footer-tray #scheduledInput {
+    grid-column: 1 / -1;
+  }
+
+  .footer-tray #scheduledDateInput {
+    width: 100%;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .footer-tray .scheduled-form .primary-button {
+    min-width: 74px;
+  }
+}
+
 @media (max-width: 680px) {
   input,
   select,
