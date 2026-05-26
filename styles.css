@@ -2630,21 +2630,37 @@ body.is-compact .scheduled-form .primary-button {
 }
 
 @media (max-width: 860px) {
-  .footer-tray .scheduled-form {
+  .footer-tray .scheduled-form,
+  body.is-compact .footer-tray .scheduled-form {
     grid-template-columns: minmax(0, 1fr) auto;
+    gap: 6px;
   }
 
   .footer-tray #scheduledInput {
     grid-column: 1 / -1;
   }
 
-  .footer-tray #scheduledDateInput {
+  .footer-tray .scheduled-form input,
+  body.is-compact .footer-tray .scheduled-form input {
+    min-height: 36px;
+    padding: 0 14px;
+    font-size: 16px;
+    line-height: 1.1;
+  }
+
+  .footer-tray #scheduledDateInput,
+  body.is-compact .footer-tray #scheduledDateInput {
     width: 100%;
     min-width: 0;
+    padding: 0 14px;
+    font-size: 16px;
+    line-height: 1.1;
     text-align: center;
   }
 
-  .footer-tray .scheduled-form .primary-button {
+  .footer-tray .scheduled-form .primary-button,
+  body.is-compact .footer-tray .scheduled-form .primary-button {
+    min-height: 36px;
     min-width: 74px;
   }
 }
