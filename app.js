@@ -2,7 +2,9 @@ const storageKey = "taskLists.v2";
 const legacyStorageKey = "tasks.v1";
 const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
+const scheduledQueueKey = "tasks.scheduledQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
+const footerTabKey = "tasks.footerTab.v1";
 const appOptionsKey = "tasks.options.v1";
 const listCollapseKey = "tasks.listCollapse.v1";
 const syncDeviceKey = "tasks.syncDeviceId.v1";
@@ -24,7 +26,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.1";
+const appVersion = "0.2.2";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -75,12 +77,22 @@ const todayLabel = document.querySelector("#todayLabel");
 const filterMenuButton = document.querySelector("#filterMenuButton");
 const filterMenu = document.querySelector("#filterMenu");
 const filterMenuLabel = document.querySelector("#filterMenuLabel");
+const footerTray = document.querySelector("#footerTray");
+const footerTabs = [...document.querySelectorAll("[data-footer-tab]")];
+const footerPanels = [...document.querySelectorAll("[data-footer-panel]")];
 const projectSection = document.querySelector(".project-section");
+const scheduledSection = document.querySelector(".scheduled-section");
 const tomorrowSection = document.querySelector(".tomorrow-section");
 const tomorrowToggle = document.querySelector("#tomorrowToggle");
 const tomorrowLabel = document.querySelector("#tomorrowLabel");
 const tomorrowBody = document.querySelector("#tomorrowBody");
 const tomorrowCount = document.querySelector("#tomorrowCount");
+const projectCount = document.querySelector("#projectCount");
+const scheduledCount = document.querySelector("#scheduledCount");
+const scheduledList = document.querySelector("#scheduledList");
+const scheduledForm = document.querySelector("#scheduledForm");
+const scheduledInput = document.querySelector("#scheduledInput");
+const scheduledDateInput = document.querySelector("#scheduledDateInput");
 const tomorrowList = document.querySelector("#tomorrowList");
 const tomorrowForm = document.querySelector("#tomorrowForm");
 const tomorrowInput = document.querySelector("#tomorrowInput");
@@ -125,6 +137,7 @@ lists = applyArchiveMetadataToLists(lists);
 persistArchiveState();
 let appOptions = loadAppOptions();
 let tomorrowQueue = loadTomorrowQueue();
+let scheduledQueue = loadScheduledQueue();
 let filter = "all";
 let dragState = null;
 let openMenu = null;
@@ -134,6 +147,7 @@ let settingsOptionsOpen = false;
 let editingListId = null;
 let editingTask = null;
 let tomorrowCollapsed = localStorage.getItem(tomorrowCollapsedKey) === "true";
+let activeFooterTab = localStorage.getItem(footerTabKey) ?? (tomorrowCollapsed ? "" : "tomorrow");
 let expandedCompletedLists = new Set();
 let activeTaskFormListId = null;
 const taskFormDrafts = new Map();
@@ -175,6 +189,7 @@ if (savedTheme) {
 
 if ("ResizeObserver" in window) {
   const footerResizeObserver = new ResizeObserver(updateTomorrowFooterSpace);
+  if (footerTray) footerResizeObserver.observe(footerTray);
   if (tomorrowSection) footerResizeObserver.observe(tomorrowSection);
   if (projectSection) footerResizeObserver.observe(projectSection);
 }
@@ -698,10 +713,71 @@ settingsMenuButton.addEventListener("click", () => {
   renderSettingsMenu();
 });
 
-tomorrowToggle.addEventListener("click", () => {
-  tomorrowCollapsed = !tomorrowCollapsed;
+footerTray?.addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-footer-tab]");
+  if (!tab) return;
+
+  activeFooterTab = activeFooterTab === tab.dataset.footerTab ? "" : tab.dataset.footerTab;
+  localStorage.setItem(footerTabKey, activeFooterTab);
+  tomorrowCollapsed = activeFooterTab !== "tomorrow";
   localStorage.setItem(tomorrowCollapsedKey, String(tomorrowCollapsed));
-  renderTomorrowQueue({ scrollToBottom: true });
+  if (activeFooterTab === "projects") {
+    expandProjectFooterLists();
+  }
+  render();
+});
+
+if (tomorrowToggle && !tomorrowToggle.closest("#footerTray")) {
+  tomorrowToggle.addEventListener("click", () => {
+    tomorrowCollapsed = !tomorrowCollapsed;
+    localStorage.setItem(tomorrowCollapsedKey, String(tomorrowCollapsed));
+    renderTomorrowQueue({ scrollToBottom: true });
+  });
+}
+
+scheduledForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const title = scheduledInput.value.trim();
+  const targetDate = scheduledDateInput.value || getDateKey();
+  if (!title) return;
+
+  scheduledQueue.push(createScheduledQueueItem(title, { targetDate }));
+  scheduledForm.reset();
+  scheduledDateInput.value = getTomorrowDateKey();
+  scheduledInput.focus();
+  persistScheduledQueue();
+  rollScheduledQueueIntoToday({ renderAfter: true });
+  renderScheduledQueue();
+});
+
+scheduledForm?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || event.target !== scheduledInput) return;
+
+  event.preventDefault();
+  scheduledForm.requestSubmit();
+});
+
+scheduledList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-scheduled-action]");
+  if (!button) return;
+
+  const item = button.closest("[data-scheduled-id]");
+  if (!item) return;
+
+  if (button.dataset.scheduledAction === "delete") {
+    const removedIndex = scheduledQueue.findIndex((entry) => entry.id === item.dataset.scheduledId);
+    const removedItem = cloneScheduledQueueItem(scheduledQueue[removedIndex]);
+    scheduledQueue = scheduledQueue.filter((entry) => entry.id !== item.dataset.scheduledId);
+    persistScheduledQueue();
+    renderScheduledQueue();
+    if (removedItem) {
+      showUndo(`Removed "${removedItem.title}" from Scheduled.`, () => {
+        insertScheduledQueueItemAt(removedItem, removedIndex);
+        persistScheduledQueue();
+        renderScheduledQueue();
+      });
+    }
+  }
 });
 
 tomorrowForm.addEventListener("submit", (event) => {
@@ -943,6 +1019,12 @@ function persistLists(options = {}) {
 
 function persistTomorrowQueue() {
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  rememberLocalTaskStateUser();
+  queueRemoteSync({ syncShared: false });
+}
+
+function persistScheduledQueue() {
+  localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
   rememberLocalTaskStateUser();
   queueRemoteSync({ syncShared: false });
 }
@@ -1204,30 +1286,34 @@ async function loadRemoteState(options = {}) {
   const remoteTomorrowQueue = privateDocument
     ? normalizeTomorrowQueue(privateDocument.tomorrow_queue)
     : [];
+  const remoteScheduledQueue = privateDocument
+    ? normalizeScheduledQueue(privateDocument.scheduled_queue)
+    : [];
   const mergedPrivateState = privateDocument
     ? (trustLocalState
-      ? mergePrivateState(localPrivateLists, tomorrowQueue, remotePrivateLists, remoteTomorrowQueue)
-      : rollDueQueueIntoPrivateState(remotePrivateLists, remoteTomorrowQueue))
-    : rollDueQueueIntoPrivateState(localPrivateLists, trustLocalState ? tomorrowQueue : []);
+      ? mergePrivateState(localPrivateLists, tomorrowQueue, scheduledQueue, remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue)
+      : rollDueQueuesIntoPrivateState(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue))
+    : rollDueQueuesIntoPrivateState(localPrivateLists, trustLocalState ? tomorrowQueue : [], trustLocalState ? scheduledQueue : []);
   const privateLists = mergedPrivateState.lists;
   const nextTomorrowQueue = mergedPrivateState.tomorrowQueue;
+  const nextScheduledQueue = mergedPrivateState.scheduledQueue;
 
   if (documentStandingLists.length > 0) {
     await pushSharedLists(documentStandingLists);
-    await pushPrivateState(privateLists, nextTomorrowQueue);
+    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
       handleRemoteSyncError("Shared list sync", sharedResult.error, { retryTransientErrors });
       return;
     }
-  } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, privateLists, nextTomorrowQueue)) {
-    const privateError = await pushPrivateState(privateLists, nextTomorrowQueue);
+  } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue, privateLists, nextTomorrowQueue, nextScheduledQueue)) {
+    const privateError = await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
     if (privateError) {
       reportSyncError("Private sync", privateError);
       return;
     }
   } else if (!privateDocument) {
-    await pushPrivateState(privateLists, nextTomorrowQueue);
+    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
   }
 
   const sharedListIds = new Set(sharedResult.lists.map((list) => list.id));
@@ -1246,6 +1332,7 @@ async function loadRemoteState(options = {}) {
   applyRemoteState({
     lists: [...privateLists, ...mergedSharedLists],
     tomorrowQueue: nextTomorrowQueue,
+    scheduledQueue: nextScheduledQueue,
     updatedAt: privateDocument?.updated_at || new Date().toISOString()
   });
   markSyncSuccess();
@@ -1367,7 +1454,7 @@ async function pushRemoteState() {
   const sharedLists = getPendingSharedLists();
   const syncTaskOrderListIds = new Set(syncPendingTaskOrderListIds);
 
-  const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, updatedAt);
+  const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, scheduledQueue, updatedAt);
   if (privateError) {
     reportSyncError("Private sync", privateError);
     return;
@@ -1469,10 +1556,12 @@ function applyRemoteState(remoteState) {
   hydrateArchiveStateFromLists(lists);
   lists = applyArchiveMetadataToLists(lists);
   tomorrowQueue = normalizeTomorrowQueue(remoteState.tomorrowQueue);
+  scheduledQueue = normalizeScheduledQueue(remoteState.scheduledQueue);
   syncLastRemoteUpdatedAt = remoteState.updatedAt || "";
 
   localStorage.setItem(storageKey, JSON.stringify(lists));
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+  localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
   rememberLocalTaskStateUser();
   persistDeletedSharedTasks();
   persistArchiveState();
@@ -1504,6 +1593,7 @@ function resetInMemoryTaskStateForAccountBoundary() {
   saveAppOptions();
   lists = [];
   tomorrowQueue = [];
+  scheduledQueue = [];
   expandedCompletedLists.clear();
   activeTaskFormListId = null;
   editingListId = null;
@@ -1519,7 +1609,7 @@ function resetInMemoryTaskStateForAccountBoundary() {
 async function fetchPrivateDocument() {
   return syncClient
     .from("task_documents")
-    .select("lists,tomorrow_queue,updated_at,device_id")
+    .select("lists,tomorrow_queue,scheduled_queue,updated_at,device_id")
     .eq("user_id", syncUser.id)
     .maybeSingle();
 }
@@ -1619,8 +1709,8 @@ async function fetchSharedLists() {
   };
 }
 
-async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, updatedAt = new Date().toISOString()) {
-  const mergedState = await getMergedPrivateStateForPush(privateLists, queue);
+async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, scheduled = scheduledQueue, updatedAt = new Date().toISOString()) {
+  const mergedState = await getMergedPrivateStateForPush(privateLists, queue, scheduled);
   if (mergedState.error) return mergedState.error;
 
   const { error } = await syncClient
@@ -1629,6 +1719,7 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
       user_id: syncUser.id,
       lists: mergedState.lists,
       tomorrow_queue: mergedState.tomorrowQueue,
+      scheduled_queue: mergedState.scheduledQueue,
       updated_at: updatedAt,
       device_id: syncDeviceId
     }, {
@@ -1640,8 +1731,10 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
     hydrateArchiveStateFromLists(mergedState.lists);
     lists = applyArchiveMetadataToLists(ensureTodayList([...mergedState.lists, ...getStandingLists(lists)]));
     tomorrowQueue = mergedState.tomorrowQueue;
+    scheduledQueue = mergedState.scheduledQueue;
     localStorage.setItem(storageKey, JSON.stringify(lists));
     localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
+    localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
     rememberLocalTaskStateUser();
     persistArchiveState();
   }
@@ -2241,6 +2334,19 @@ function loadTomorrowQueue() {
   return [];
 }
 
+function loadScheduledQueue() {
+  try {
+    const savedQueue = JSON.parse(localStorage.getItem(scheduledQueueKey));
+    if (Array.isArray(savedQueue)) {
+      return savedQueue.map(normalizeScheduledQueueItem).filter(Boolean);
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
 function loadCompletedArchiveText() {
   return mergeArchiveText(localStorage.getItem(completedArchiveKey) || "");
 }
@@ -2436,15 +2542,30 @@ function rememberListCollapsed(listId, collapsed) {
   persistListCollapsePrefs();
 }
 
+function expandProjectFooterLists() {
+  let changed = false;
+  lists.forEach((list) => {
+    if (!isProjectList(list) || !list.collapsed) return;
+    list.collapsed = false;
+    rememberListCollapsed(list.id, false);
+    changed = true;
+  });
+  if (changed) {
+    persistLocalListsOnly();
+  }
+}
+
 function render() {
   refreshTodayText();
   const todayList = lists.find(isTodayList);
   const visibleLists = lists.filter((list) => !isTodayList(list) && !isProjectList(list) && shouldShowList(list));
   const visibleProjectLists = lists.filter((list) => isProjectList(list) && shouldShowList(list));
 
+  syncFooterTrayState();
   renderFilterMenu();
   renderSettingsMenu();
   renderTomorrowQueue();
+  renderScheduledQueue();
   listComposer.hidden = filter === "hidden";
   projectSection.hidden = !appOptions.showProjects;
   tomorrowSection.hidden = !appOptions.showTomorrow;
@@ -2455,6 +2576,7 @@ function render() {
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
   listBoard.replaceChildren(...visibleLists.map(createListElement));
   projectBoard.replaceChildren(...visibleProjectLists.map(createListElement));
+  renderFooterTray();
   updateTomorrowFooterSpace();
 }
 
@@ -2494,7 +2616,6 @@ function renderSettingsMenu() {
   viewArchiveButton.disabled = !hasArchive;
   copyArchiveButton.disabled = !hasArchive;
   downloadArchiveButton.disabled = !hasArchive;
-
   if (appVersionLabel) appVersionLabel.textContent = appVersion;
   if (lastSyncedAtLabel) lastSyncedAtLabel.textContent = formatLastSyncedText();
 }
@@ -2595,6 +2716,66 @@ function downloadArchiveText() {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+function renderFooterTray() {
+  const visibleTabs = syncFooterTrayState();
+
+  footerTray.hidden = visibleTabs.length === 0;
+  document.body.classList.toggle("has-no-pinned-footer", visibleTabs.length === 0);
+
+  footerTabs.forEach((tab) => {
+    const tabName = tab.dataset.footerTab;
+    const visible = visibleTabs.includes(tabName);
+    const active = activeFooterTab === tabName;
+    tab.hidden = !visible;
+    tab.classList.toggle("is-active", active);
+    tab.setAttribute("aria-selected", String(active));
+    tab.setAttribute("tabindex", active ? "0" : "-1");
+  });
+
+  footerPanels.forEach((panel) => {
+    const tabName = panel.dataset.footerPanel;
+    panel.hidden = activeFooterTab !== tabName || !visibleTabs.includes(tabName);
+  });
+
+  if (projectCount) {
+    const projectList = lists.find(isProjectList);
+    const openProjects = projectList?.tasks.filter((task) => !task.completed).length || 0;
+    projectCount.textContent = String(openProjects);
+  }
+
+  updateTomorrowFooterSpace();
+}
+
+function syncFooterTrayState() {
+  const visibleTabs = getVisibleFooterTabs();
+  let nextActiveTab = activeFooterTab;
+
+  if (nextActiveTab && !visibleTabs.includes(nextActiveTab)) {
+    nextActiveTab = visibleTabs.includes("tomorrow") ? "tomorrow" : visibleTabs[0] || "";
+  }
+
+  if (nextActiveTab !== activeFooterTab) {
+    activeFooterTab = nextActiveTab;
+    localStorage.setItem(footerTabKey, activeFooterTab);
+  }
+
+  const nextTomorrowCollapsed = activeFooterTab !== "tomorrow";
+  if (tomorrowCollapsed !== nextTomorrowCollapsed) {
+    tomorrowCollapsed = nextTomorrowCollapsed;
+    localStorage.setItem(tomorrowCollapsedKey, String(tomorrowCollapsed));
+  }
+
+  return visibleTabs;
+}
+
+function getVisibleFooterTabs() {
+  return [
+    ...(appOptions.showProjects ? ["projects"] : []),
+    "scheduled",
+    ...(appOptions.showTomorrow ? ["tomorrow"] : [])
+  ];
+}
+
 function renderTomorrowQueue(options = {}) {
   const { scrollToBottom = false } = options;
   const queueLabel = getTomorrowQueueLabel();
@@ -2604,7 +2785,7 @@ function renderTomorrowQueue(options = {}) {
   tomorrowInput.setAttribute("aria-label", tomorrowInput.placeholder);
   tomorrowToggle.setAttribute("aria-expanded", String(!tomorrowCollapsed));
   tomorrowBody.hidden = tomorrowCollapsed;
-  tomorrowCount.textContent = tomorrowQueue.length === 1 ? "1 queued" : `${tomorrowQueue.length} queued`;
+  tomorrowCount.textContent = String(tomorrowQueue.length);
 
   if (tomorrowQueue.length === 0) {
     const empty = document.createElement("li");
@@ -2619,6 +2800,29 @@ function renderTomorrowQueue(options = {}) {
   updateTomorrowFooterSpace();
   if (scrollToBottom) {
     scrollTomorrowQueueToBottom();
+  }
+}
+
+function renderScheduledQueue(options = {}) {
+  const { scrollToBottom = false } = options;
+  scheduledDateInput.value ||= getTomorrowDateKey();
+  scheduledCount.textContent = String(scheduledQueue.length);
+
+  if (scheduledQueue.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "scheduled-empty";
+    empty.textContent = "No scheduled tasks.";
+    scheduledList.replaceChildren(empty);
+    updateTomorrowFooterSpace();
+    return;
+  }
+
+  scheduledList.replaceChildren(...getSortedScheduledQueue().map(createScheduledQueueElement));
+  updateTomorrowFooterSpace();
+  if (scrollToBottom) {
+    window.requestAnimationFrame(() => {
+      scheduledList.scrollTop = scheduledList.scrollHeight;
+    });
   }
 }
 
@@ -2646,6 +2850,54 @@ function createTomorrowQueueElement(entry) {
 
   item.append(title, button);
   return item;
+}
+
+function createScheduledQueueElement(entry) {
+  const item = document.createElement("li");
+  item.className = "scheduled-item";
+  item.dataset.scheduledId = entry.id;
+
+  const title = document.createElement("p");
+  title.className = "scheduled-title";
+  title.textContent = entry.title;
+
+  const date = document.createElement("span");
+  date.className = "scheduled-date";
+  date.textContent = formatScheduledDate(entry.targetDate);
+
+  const button = document.createElement("button");
+  button.className = "scheduled-remove";
+  button.type = "button";
+  button.dataset.scheduledAction = "delete";
+  button.setAttribute("aria-label", `Remove ${entry.title}`);
+  button.textContent = "Remove";
+
+  item.append(title, date, button);
+  return item;
+}
+
+function getSortedScheduledQueue() {
+  return getSortedScheduledQueueItems(scheduledQueue);
+}
+
+function getSortedScheduledQueueItems(queue = []) {
+  return normalizeScheduledQueue(queue).sort((first, second) => {
+    const dateCompare = first.targetDate.localeCompare(second.targetDate);
+    if (dateCompare) return dateCompare;
+    return (first.createdAt || "").localeCompare(second.createdAt || "");
+  });
+}
+
+function formatScheduledDate(dateKey) {
+  const date = parseDateKey(dateKey);
+  if (!date) return "No date";
+  const todayKey = getDateKey();
+  if (dateKey === todayKey) return "Today";
+  if (dateKey === getTomorrowDateKey()) return "Tomorrow";
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric"
+  }).format(date);
 }
 
 function shouldShowList(list) {
@@ -2846,11 +3098,12 @@ function createTaskForm(list) {
   form.dataset.listId = list.id;
   form.autocomplete = "off";
   const draft = getTaskFormDraft(list.id);
+  const addLabel = getTaskFormAddLabel(list);
 
   const title = document.createElement("input");
   title.name = "title";
   title.type = "text";
-  title.placeholder = "Add a to-do";
+  title.placeholder = addLabel;
   title.required = true;
   title.maxLength = 120;
   title.value = draft.title;
@@ -2884,12 +3137,17 @@ function createTaskForm(list) {
 
 function createTaskFormLauncher(list) {
   const button = document.createElement("button");
+  const addLabel = getTaskFormAddLabel(list);
   button.className = "inline-task-launcher";
   button.type = "button";
   button.dataset.action = "show-task-form";
-  button.textContent = "Add a to-do";
-  button.setAttribute("aria-label", `Add a to-do to ${list.name}`);
+  button.textContent = addLabel;
+  button.setAttribute("aria-label", `${addLabel} to ${list.name}`);
   return button;
+}
+
+function getTaskFormAddLabel(list) {
+  return isProjectList(list) ? "Add a project" : "Add a to-do";
 }
 
 function createListRenameForm(list) {
@@ -3070,7 +3328,9 @@ function setTaskRepeat(task, mode, options = {}) {
     mode,
     anchorDate: todayKey,
     dayOfMonth,
-    lastRunDate: isRepeatDueOnDate(repeat, todayKey) ? todayKey : ""
+    lastRunDate: isRepeatDueOnDate(repeat, todayKey)
+      ? todayKey
+      : ""
   });
   markTaskUpdated(task);
 }
@@ -3327,7 +3587,9 @@ function createRepeatPanel(task) {
 
   const choices = document.createElement("div");
   choices.className = "menu-repeat-choices";
-  choices.append(createRepeatChoice(repeatOffValue, "No repeat", !task.repeat?.enabled));
+
+  const offButton = createRepeatChoice(repeatOffValue, "No repeat", !task.repeat?.enabled);
+  choices.append(offButton);
   repeatOptions.forEach((option) => {
     choices.append(createRepeatChoice(option.value, option.label, task.repeat?.mode === option.value));
   });
@@ -3709,6 +3971,10 @@ function cloneTomorrowQueueItem(item) {
   return item ? normalizeTomorrowQueueItem({ ...item }) : null;
 }
 
+function cloneScheduledQueueItem(item) {
+  return item ? normalizeScheduledQueueItem({ ...item }) : null;
+}
+
 function insertListAt(list, index) {
   const nextList = cloneList(list);
   const nextLists = ensureTodayList(lists).filter((item) => item.id !== nextList.id);
@@ -3738,6 +4004,15 @@ function insertTomorrowQueueItemAt(item, index) {
   tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== nextItem.id);
   const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : tomorrowQueue.length, tomorrowQueue.length));
   tomorrowQueue.splice(insertIndex, 0, nextItem);
+}
+
+function insertScheduledQueueItemAt(item, index) {
+  const nextItem = cloneScheduledQueueItem(item);
+  if (!nextItem) return;
+
+  scheduledQueue = scheduledQueue.filter((entry) => entry.id !== nextItem.id);
+  const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : scheduledQueue.length, scheduledQueue.length));
+  scheduledQueue.splice(insertIndex, 0, nextItem);
 }
 
 function listToRow(list, position, updatedAt) {
@@ -3856,6 +4131,35 @@ function normalizeTomorrowQueueItem(item) {
 
 function normalizeTomorrowQueue(queue) {
   return Array.isArray(queue) ? queue.map(normalizeTomorrowQueueItem).filter(Boolean) : [];
+}
+
+function createScheduledQueueItem(title, options = {}) {
+  return {
+    id: options.id || uid(),
+    title,
+    targetDate: isDateKey(options.targetDate) ? options.targetDate : getDateKey(),
+    createdAt: options.createdAt || new Date().toISOString()
+  };
+}
+
+function normalizeScheduledQueueItem(item) {
+  if (typeof item === "string") {
+    const title = item.trim();
+    return title ? createScheduledQueueItem(title) : null;
+  }
+
+  const title = item?.title?.trim();
+  if (!title) return null;
+
+  return createScheduledQueueItem(title, {
+    id: item.id,
+    targetDate: isDateKey(item.targetDate) ? item.targetDate : getDateKey(),
+    createdAt: item.createdAt
+  });
+}
+
+function normalizeScheduledQueue(queue) {
+  return Array.isArray(queue) ? queue.map(normalizeScheduledQueueItem).filter(Boolean) : [];
 }
 
 function loadDeletedSharedTasks() {
@@ -4103,8 +4407,8 @@ function markTaskOrderUpdated(list) {
   list?.tasks.forEach((task) => markTaskUpdated(task, updatedAt));
 }
 
-async function getMergedPrivateStateForPush(privateLists, queue) {
-  const localState = rollDueQueueIntoPrivateState(privateLists, queue);
+async function getMergedPrivateStateForPush(privateLists, queue, scheduled) {
+  const localState = rollDueQueuesIntoPrivateState(privateLists, queue, scheduled);
   const remoteResult = await fetchPrivateDocument();
   if (remoteResult.error) {
     return { ...localState, error: remoteResult.error };
@@ -4118,21 +4422,23 @@ async function getMergedPrivateStateForPush(privateLists, queue) {
     ? ensureTodayList(remoteResult.data.lists.map(normalizeList)).filter(isTodayList)
     : [];
   const remoteQueue = normalizeTomorrowQueue(remoteResult.data.tomorrow_queue);
+  const remoteScheduledQueue = normalizeScheduledQueue(remoteResult.data.scheduled_queue);
 
   return {
-    ...mergePrivateState(localState.lists, localState.tomorrowQueue, remoteLists, remoteQueue),
+    ...mergePrivateState(localState.lists, localState.tomorrowQueue, localState.scheduledQueue, remoteLists, remoteQueue, remoteScheduledQueue),
     error: null
   };
 }
 
 // Multiple installed app instances can wake up with stale private state, so private sync preserves items from both sides.
-function mergePrivateState(localPrivateLists = [], localQueue = [], remotePrivateLists = [], remoteQueue = []) {
+function mergePrivateState(localPrivateLists = [], localQueue = [], localScheduledQueue = [], remotePrivateLists = [], remoteQueue = [], remoteScheduledQueue = []) {
   const localToday = ensureTodayList(localPrivateLists.map(normalizeList)).find(isTodayList);
   const remoteToday = ensureTodayList(remotePrivateLists.map(normalizeList)).find(isTodayList);
   const mergedToday = mergeTodayLists(localToday, remoteToday);
   const mergedQueue = mergeTomorrowQueues(localQueue, remoteQueue);
+  const mergedScheduledQueue = mergeScheduledQueues(localScheduledQueue, remoteScheduledQueue);
 
-  return rollDueQueueIntoPrivateState([mergedToday], mergedQueue);
+  return rollDueQueuesIntoPrivateState([mergedToday], mergedQueue, mergedScheduledQueue);
 }
 
 function mergeTodayLists(localToday, remoteToday) {
@@ -4226,12 +4532,38 @@ function mergeTomorrowQueueItem(existing, incoming) {
   });
 }
 
-function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
+function mergeScheduledQueues(primaryQueue = [], secondaryQueue = []) {
+  const queueOrder = [];
+  const queueById = new Map();
+
+  [...normalizeScheduledQueue(primaryQueue), ...normalizeScheduledQueue(secondaryQueue)].forEach((item) => {
+    if (!queueById.has(item.id)) {
+      queueOrder.push(item.id);
+      queueById.set(item.id, item);
+      return;
+    }
+
+    queueById.set(item.id, mergeScheduledQueueItem(queueById.get(item.id), item));
+  });
+
+  return queueOrder.map((itemId) => queueById.get(itemId)).filter(Boolean);
+}
+
+function mergeScheduledQueueItem(existing, incoming) {
+  return createScheduledQueueItem(existing.title || incoming.title, {
+    id: existing.id || incoming.id,
+    targetDate: getEarliestDateKey(existing.targetDate, incoming.targetDate) || existing.targetDate || incoming.targetDate,
+    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt
+  });
+}
+
+function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled = []) {
   const todayKey = getDateKey();
   const nextLists = ensureTodayList(privateLists.map(normalizeList)).filter(isTodayList);
   const todayList = nextLists.find(isTodayList);
   todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
   const remainingQueue = [];
+  const remainingScheduledQueue = [];
   const canRollToday = shouldRollTomorrowQueueToday();
 
   normalizeTomorrowQueue(queue).forEach((item) => {
@@ -4252,19 +4584,48 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
     }
   });
 
+  const dueScheduledItems = [];
+  getSortedScheduledQueueItems(scheduled).forEach((item) => {
+    if (item.targetDate > todayKey) {
+      remainingScheduledQueue.push(item);
+      return;
+    }
+
+    dueScheduledItems.push(item);
+  });
+
+  dueScheduledItems.slice().reverse().forEach((item) => {
+    const taskId = getScheduledTaskId(item);
+    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
+      return;
+    }
+    if (!todayList.tasks.some((task) => task.id === taskId)) {
+      todayList.tasks.unshift(createTask(item.title, {
+        id: taskId,
+        createdAt: item.createdAt
+      }));
+    }
+  });
+
   return {
     lists: nextLists,
-    tomorrowQueue: remainingQueue
+    tomorrowQueue: remainingQueue,
+    scheduledQueue: remainingScheduledQueue
   };
+}
+
+function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
+  return rollDueQueuesIntoPrivateState(privateLists, queue, []);
 }
 
 function getRolledTomorrowTaskId(item) {
   return `tomorrow-${item.id}`;
 }
 
-function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], nextLists = [], nextQueue = []) {
+function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], remoteScheduledQueue = [], nextLists = [], nextQueue = [], nextScheduledQueue = []) {
   return JSON.stringify(remoteLists) !== JSON.stringify(nextLists)
-    || JSON.stringify(remoteQueue) !== JSON.stringify(nextQueue);
+    || JSON.stringify(remoteQueue) !== JSON.stringify(nextQueue)
+    || JSON.stringify(remoteScheduledQueue) !== JSON.stringify(nextScheduledQueue);
 }
 
 function mergeArchiveText(...texts) {
@@ -4770,20 +5131,6 @@ function findInTaskBoards(selector) {
   return null;
 }
 
-function isInsideTaskBoard(element) {
-  return taskBoards.some((board) => board.contains(element));
-}
-
-function cleanupDragState() {
-  document.removeEventListener("pointermove", handleDragPointerMove);
-  document.removeEventListener("pointerup", handleDragPointerUp);
-  document.removeEventListener("pointercancel", handleDragPointerCancel);
-  clearDragIndicators();
-  getDragSourceElement()?.classList.remove("is-dragging");
-  document.body.classList.remove("is-reordering");
-  dragState = null;
-}
-
 function rollRepeatingTasksIntoToday(todayList, todayKey) {
   let changed = false;
   const reopenedTaskIds = [];
@@ -4809,6 +5156,58 @@ function rollRepeatingTasksIntoToday(todayList, todayKey) {
   return changed;
 }
 
+function rollScheduledQueueIntoToday(options = {}) {
+  const todayKey = getDateKey();
+  const dueItems = getSortedScheduledQueue().filter((item) => item.targetDate <= todayKey);
+  if (dueItems.length === 0) return false;
+
+  lists = ensureTodayList(lists);
+  const todayList = lists.find(isTodayList);
+  if (!todayList) return false;
+
+  todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
+  dueItems.slice().reverse().forEach((item) => {
+    const taskId = getScheduledTaskId(item);
+    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
+      return;
+    }
+    if (todayList.tasks.some((task) => task.id === taskId)) return;
+
+    todayList.tasks.unshift(createTask(item.title, {
+      id: taskId,
+      createdAt: item.createdAt
+    }));
+  });
+
+  const dueIds = new Set(dueItems.map((item) => item.id));
+  scheduledQueue = scheduledQueue.filter((item) => !dueIds.has(item.id));
+  persistLists({ syncShared: false });
+  persistScheduledQueue();
+
+  if (options.renderAfter) {
+    render();
+  }
+  return true;
+}
+
+function getScheduledTaskId(item) {
+  return `scheduled-${item.id}`;
+}
+
+function isInsideTaskBoard(element) {
+  return taskBoards.some((board) => board.contains(element));
+}
+
+function cleanupDragState() {
+  document.removeEventListener("pointermove", handleDragPointerMove);
+  document.removeEventListener("pointerup", handleDragPointerUp);
+  document.removeEventListener("pointercancel", handleDragPointerCancel);
+  clearDragIndicators();
+  getDragSourceElement()?.classList.remove("is-dragging");
+  document.body.classList.remove("is-reordering");
+  dragState = null;
+}
+
 function rollTomorrowQueueIntoToday(options = {}) {
   const dateChanged = refreshTodayText();
 
@@ -4825,15 +5224,16 @@ function rollTomorrowQueueIntoToday(options = {}) {
   lists = ensureTodayList(lists);
   const todayList = lists.find(isTodayList);
   const repeatingChanged = todayList ? rollRepeatingTasksIntoToday(todayList, todayKey) : false;
+  const scheduledChanged = rollScheduledQueueIntoToday();
 
   const dueItems = shouldRollTomorrowQueueToday()
     ? tomorrowQueue.filter((item) => item.targetDate <= todayKey)
     : [];
   if (dueItems.length === 0) {
-    if (dayChanged || repeatingChanged) {
+    if (dayChanged || repeatingChanged || scheduledChanged) {
       persistLists({ syncShared: false });
     }
-    if (options.renderAfter && (dateChanged || dayChanged || repeatingChanged)) render();
+    if (options.renderAfter && (dateChanged || dayChanged || repeatingChanged || scheduledChanged)) render();
     return;
   }
 
@@ -5056,8 +5456,8 @@ function refreshTodayText() {
 
 function updateTomorrowFooterSpace() {
   window.requestAnimationFrame(() => {
-    const footerHeight = appOptions.showTomorrow ? tomorrowSection?.getBoundingClientRect().height || 0 : 0;
-    const projectHeight = appOptions.showProjects ? projectSection?.getBoundingClientRect().height || 0 : 0;
+    const footerHeight = footerTray && !footerTray.hidden ? footerTray.getBoundingClientRect().height || 0 : 0;
+    const projectHeight = 0;
     document.documentElement.style.setProperty("--tomorrow-footer-space", `${footerHeight ? footerHeight + 18 : 0}px`);
     document.documentElement.style.setProperty("--project-footer-space", `${projectHeight ? projectHeight + 10 : 0}px`);
   });

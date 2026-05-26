@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
-    <link rel="stylesheet" href="styles.css?v=0.2.1">
+    <link rel="stylesheet" href="styles.css?v=0.2.2">
   </head>
   <body>
     <main class="app-shell">
@@ -117,22 +117,44 @@
         </form>
       </section>
 
-      <section class="project-section" aria-label="Projects list">
-        <ul id="projectBoard" class="list-board project-board"></ul>
-      </section>
+      <section class="footer-tray" id="footerTray" aria-label="Pinned footer lists">
+        <div class="footer-tabs" role="tablist" aria-label="Footer lists">
+          <button class="footer-tab" id="tomorrowToggle" type="button" role="tab" data-footer-tab="tomorrow" aria-controls="footerTomorrowPanel" aria-expanded="true">
+            <span id="tomorrowLabel">Tomorrow</span>
+            <span class="footer-tab-count" id="tomorrowCount">0</span>
+          </button>
+          <button class="footer-tab" id="footerProjectsTab" type="button" role="tab" data-footer-tab="projects" aria-controls="footerProjectsPanel">
+            <span>Projects</span>
+            <span class="footer-tab-count" id="projectCount">0</span>
+          </button>
+          <button class="footer-tab" id="footerScheduledTab" type="button" role="tab" data-footer-tab="scheduled" aria-controls="footerScheduledPanel">
+            <span>Scheduled</span>
+            <span class="footer-tab-count" id="scheduledCount">0</span>
+          </button>
+        </div>
 
-      <section class="tomorrow-section" aria-label="Tomorrow queue">
-        <button class="tomorrow-toggle" id="tomorrowToggle" type="button" aria-expanded="true" aria-controls="tomorrowBody">
-          <span id="tomorrowLabel">Tomorrow</span>
-          <span id="tomorrowCount">0 queued</span>
-        </button>
-        <div class="tomorrow-body" id="tomorrowBody">
-          <ul class="tomorrow-list" id="tomorrowList"></ul>
-          <form class="tomorrow-form" id="tomorrowForm" autocomplete="off">
-            <input id="tomorrowInput" name="title" type="text" placeholder="Add to tomorrow" aria-label="Add to tomorrow" required maxlength="120">
+        <section class="tomorrow-section footer-panel" id="footerTomorrowPanel" data-footer-panel="tomorrow" role="tabpanel" aria-labelledby="tomorrowToggle">
+          <div class="tomorrow-body" id="tomorrowBody">
+            <ul class="tomorrow-list" id="tomorrowList"></ul>
+            <form class="tomorrow-form" id="tomorrowForm" autocomplete="off">
+              <input id="tomorrowInput" name="title" type="text" placeholder="Add to tomorrow" aria-label="Add to tomorrow" required maxlength="120">
+              <button class="primary-button" type="submit">Add</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="project-section footer-panel" id="footerProjectsPanel" data-footer-panel="projects" role="tabpanel" aria-labelledby="footerProjectsTab">
+          <ul id="projectBoard" class="list-board project-board"></ul>
+        </section>
+
+        <section class="scheduled-section footer-panel" id="footerScheduledPanel" data-footer-panel="scheduled" role="tabpanel" aria-labelledby="footerScheduledTab">
+          <ul class="scheduled-list" id="scheduledList"></ul>
+          <form class="scheduled-form" id="scheduledForm" autocomplete="off">
+            <input id="scheduledInput" name="title" type="text" placeholder="Add scheduled" aria-label="Add scheduled task" required maxlength="120">
+            <input id="scheduledDateInput" name="targetDate" type="date" aria-label="Scheduled date" required>
             <button class="primary-button" type="submit">Add</button>
           </form>
-        </div>
+        </section>
       </section>
     </main>
 
@@ -186,6 +208,6 @@
 
     <script src="sync-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=0.2.1"></script>
+    <script src="app.js?v=0.2.2"></script>
   </body>
 </html>

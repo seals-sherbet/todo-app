@@ -2,9 +2,13 @@ create table if not exists public.task_documents (
   user_id uuid primary key references auth.users(id) on delete cascade,
   lists jsonb not null default '[]'::jsonb,
   tomorrow_queue jsonb not null default '[]'::jsonb,
+  scheduled_queue jsonb not null default '[]'::jsonb,
   updated_at timestamptz not null default now(),
   device_id text not null default ''
 );
+
+alter table if exists public.task_documents
+add column if not exists scheduled_queue jsonb not null default '[]'::jsonb;
 
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
