@@ -24,10 +24,11 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.0";
+const appVersion = "0.2.1";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
+const listComposer = document.querySelector(".composer");
 const todayBoard = document.querySelector("#todayBoard");
 const listBoard = document.querySelector("#listBoard");
 const projectBoard = document.querySelector("#projectBoard");
@@ -2444,6 +2445,7 @@ function render() {
   renderFilterMenu();
   renderSettingsMenu();
   renderTomorrowQueue();
+  listComposer.hidden = filter === "hidden";
   projectSection.hidden = !appOptions.showProjects;
   tomorrowSection.hidden = !appOptions.showTomorrow;
   emptyState.hidden = visibleLists.length + (appOptions.showProjects ? visibleProjectLists.length : 0) > 0;
