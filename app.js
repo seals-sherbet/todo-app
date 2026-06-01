@@ -26,7 +26,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.6";
+const appVersion = "0.2.7";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -128,6 +128,24 @@ const repeatOptions = [
   { value: "yearly", label: "Yearly" }
 ];
 const repeatOptionValues = new Set(repeatOptions.map((option) => option.value));
+const monthlyPatternRepeatMode = "monthly-pattern";
+const monthlyRepeatPatternOptions = [
+  {
+    value: "first-weekday",
+    label: "First Weekday",
+    fullLabel: "first weekday",
+    badge: "First Weekday",
+    kind: "first-weekday"
+  },
+  {
+    value: "last-weekday",
+    label: "Last Weekday",
+    fullLabel: "last weekday",
+    badge: "Last Weekday",
+    kind: "last-weekday"
+  }
+];
+const monthlyRepeatPatternValues = new Set(monthlyRepeatPatternOptions.map((option) => option.value));
 
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
@@ -529,7 +547,9 @@ async function handleTaskBoardClick(event) {
 
   if (button.dataset.action === "set-task-repeat") {
     if (!isTodayList(list)) return;
-    setTaskRepeat(task, button.dataset.repeatMode);
+    setTaskRepeat(task, button.dataset.repeatMode, {
+      monthlyPattern: button.dataset.repeatPattern
+    });
     openMenu = null;
     persistAndRender({ syncShared: false });
     return;
@@ -3036,9 +3056,13 @@ function shouldShowList(list) {
 
 function getTaskGroups(list) {
   const openTasks = list.tasks.filter((task) => !task.completed);
-  const completedTasks = list.tasks.filter((task) => task.completed).sort(compareCompletedTasks);
-  const completedTodayTasks = completedTasks.filter(isTaskCompletedToday);
-  const previousCompletedTasks = completedTasks.filter((task) => !isTaskCompletedToday(task));
+  const allCompletedTasks = list.tasks.filter((task) => task.completed).sort(compareCompletedTasks);
+  const completedTodayTasks = allCompletedTasks.filter(isTaskCompletedToday);
+  const canShowPreviousCompletedTasks = !isPinnedList(list);
+  const completedTasks = canShowPreviousCompletedTasks ? allCompletedTasks : completedTodayTasks;
+  const previousCompletedTasks = canShowPreviousCompletedTasks
+    ? allCompletedTasks.filter((task) => !isTaskCompletedToday(task))
+    : [];
 
   if (filter === "active") {
     return {
@@ -3068,7 +3092,7 @@ function getTaskGroups(list) {
     };
   }
 
-  const showAllCompleted = filter === "completed" || expandedCompletedLists.has(list.id);
+  const showAllCompleted = canShowPreviousCompletedTasks && (filter === "completed" || expandedCompletedLists.has(list.id));
   const visiblePreviousCompletedTasks = showAllCompleted ? previousCompletedTasks : [];
 
   return {
@@ -3080,7 +3104,7 @@ function getTaskGroups(list) {
     visiblePreviousCompletedTasks,
     hiddenCompletedCount: showAllCompleted ? 0 : previousCompletedTasks.length,
     isCompletedExpanded: showAllCompleted,
-    showCompletedToggle: ["all", "shared", "private"].includes(filter) && previousCompletedTasks.length > 0
+    showCompletedToggle: canShowPreviousCompletedTasks && ["all", "shared", "private"].includes(filter) && previousCompletedTasks.length > 0
   };
 }
 
@@ -3440,9 +3464,13 @@ function setTaskRepeat(task, mode, options = {}) {
 
   const todayKey = getDateKey();
   const dayOfMonth = options.dayOfMonth || new Date().getDate();
+  const monthlyPattern = mode === monthlyPatternRepeatMode
+    ? normalizeMonthlyRepeatPattern(options.monthlyPattern) || monthlyRepeatPatternOptions[0].value
+    : "";
   const repeat = {
     mode,
     dayOfMonth,
+    monthlyPattern,
     anchorDate: todayKey
   };
 
@@ -3451,6 +3479,7 @@ function setTaskRepeat(task, mode, options = {}) {
     mode,
     anchorDate: todayKey,
     dayOfMonth,
+    monthlyPattern,
     lastRunDate: isRepeatDueOnDate(repeat, todayKey)
       ? todayKey
       : ""
@@ -3737,13 +3766,30 @@ function createRepeatPanel(task) {
 
   custom.append(input, save);
   panel.append(custom);
+
+  const patterns = document.createElement("div");
+  patterns.className = "menu-repeat-patterns";
+  monthlyRepeatPatternOptions.forEach((option) => {
+    patterns.append(createRepeatChoice(
+      monthlyPatternRepeatMode,
+      option.label,
+      task.repeat?.mode === monthlyPatternRepeatMode && task.repeat.monthlyPattern === option.value,
+      {
+        repeatPattern: option.value,
+        ariaLabel: `Repeat monthly on the ${option.fullLabel}`
+      }
+    ));
+  });
+  panel.append(patterns);
+
   return panel;
 }
 
-function createRepeatChoice(value, label, active = false) {
-  const button = createActionButton(label, "set-task-repeat", label);
+function createRepeatChoice(value, label, active = false, options = {}) {
+  const button = createActionButton(label, "set-task-repeat", options.ariaLabel || label);
   button.className = "menu-link menu-repeat-choice";
   button.dataset.repeatMode = value;
+  if (options.repeatPattern) button.dataset.repeatPattern = options.repeatPattern;
   button.classList.toggle("is-active", active);
   return button;
 }
@@ -3790,6 +3836,10 @@ function createPriorityPill(priority) {
 function formatRepeatLabel(repeat) {
   if (!repeat?.enabled) return "";
   if (repeat.mode === "monthly-date") return `Repeats monthly on ${formatOrdinal(repeat.dayOfMonth || 1)}`;
+  if (repeat.mode === monthlyPatternRepeatMode) {
+    const pattern = getMonthlyRepeatPattern(repeat.monthlyPattern);
+    return pattern ? `Repeats monthly on the ${pattern.fullLabel}` : "Repeats monthly";
+  }
   const option = repeatOptions.find((item) => item.value === repeat.mode);
   return option ? `Repeats ${option.label.toLowerCase()}` : "Repeats";
 }
@@ -3805,8 +3855,15 @@ function createRepeatBadge(repeat) {
 function formatRepeatBadgeLabel(repeat) {
   if (!repeat?.enabled) return "";
   if (repeat.mode === "monthly-date") return `Monthly ${formatOrdinal(repeat.dayOfMonth || 1)}`;
+  if (repeat.mode === monthlyPatternRepeatMode) {
+    return getMonthlyRepeatPattern(repeat.monthlyPattern)?.badge || "Monthly";
+  }
   const option = repeatOptions.find((item) => item.value === repeat.mode);
   return option?.label || "Repeat";
+}
+
+function getMonthlyRepeatPattern(value) {
+  return monthlyRepeatPatternOptions.find((option) => option.value === value) || null;
 }
 
 function formatOrdinal(day) {
@@ -4064,14 +4121,19 @@ function normalizeTask(task) {
 
 function normalizeTaskRepeat(repeat) {
   if (!repeat || repeat.enabled === false || repeat.mode === repeatOffValue) return null;
-  const mode = repeatOptionValues.has(repeat.mode) || repeat.mode === "monthly-date" ? repeat.mode : "";
+  const mode = repeatOptionValues.has(repeat.mode) || repeat.mode === "monthly-date" || repeat.mode === monthlyPatternRepeatMode
+    ? repeat.mode
+    : "";
   if (!mode) return null;
+  const monthlyPattern = normalizeMonthlyRepeatPattern(repeat.monthlyPattern || repeat.pattern);
+  if (mode === monthlyPatternRepeatMode && !monthlyPattern) return null;
 
   return {
     enabled: true,
     mode,
     anchorDate: isDateKey(repeat.anchorDate) ? repeat.anchorDate : getDateKey(),
     dayOfMonth: normalizeRepeatDay(repeat.dayOfMonth || new Date().getDate()),
+    monthlyPattern: mode === monthlyPatternRepeatMode ? monthlyPattern : "",
     lastRunDate: isDateKey(repeat.lastRunDate) ? repeat.lastRunDate : ""
   };
 }
@@ -4080,6 +4142,10 @@ function normalizeRepeatDay(day) {
   const value = Number.parseInt(day, 10);
   if (!Number.isInteger(value)) return new Date().getDate();
   return Math.min(31, Math.max(1, value));
+}
+
+function normalizeMonthlyRepeatPattern(pattern) {
+  return monthlyRepeatPatternValues.has(pattern) ? pattern : "";
 }
 
 function cloneList(list) {
@@ -5679,6 +5745,7 @@ function isRepeatDueOnDate(repeat, dateKey) {
   if (repeat.mode === "biweekly") return daysSinceAnchor >= 0 && daysSinceAnchor % 14 === 0;
   if (repeat.mode === "monthly") return date.getDate() === getSafeMonthDay(date, anchorDate.getDate());
   if (repeat.mode === "monthly-date") return date.getDate() === getSafeMonthDay(date, repeat.dayOfMonth || 1);
+  if (repeat.mode === monthlyPatternRepeatMode) return isMonthlyPatternDueOnDate(repeat.monthlyPattern, date);
   if (repeat.mode === "yearly") {
     const targetMonth = anchorDate.getMonth();
     if (date.getMonth() !== targetMonth) return false;
@@ -5686,6 +5753,38 @@ function isRepeatDueOnDate(repeat, dateKey) {
   }
 
   return false;
+}
+
+function isMonthlyPatternDueOnDate(patternValue, date) {
+  const pattern = getMonthlyRepeatPattern(patternValue);
+  if (!pattern) return false;
+
+  if (pattern.kind === "first-weekday") return isFirstWeekdayOfMonth(date);
+  if (pattern.kind === "last-weekday") return isLastWeekdayOfMonth(date);
+
+  return false;
+}
+
+function isFirstWeekdayOfMonth(date) {
+  if (!isWeekday(date)) return false;
+
+  const firstWeekday = new Date(date.getFullYear(), date.getMonth(), 1);
+  while (!isWeekday(firstWeekday)) {
+    firstWeekday.setDate(firstWeekday.getDate() + 1);
+  }
+
+  return date.getDate() === firstWeekday.getDate();
+}
+
+function isLastWeekdayOfMonth(date) {
+  if (!isWeekday(date)) return false;
+
+  const lastWeekday = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  while (!isWeekday(lastWeekday)) {
+    lastWeekday.setDate(lastWeekday.getDate() - 1);
+  }
+
+  return date.getDate() === lastWeekday.getDate();
 }
 
 function getSafeMonthDay(date, preferredDay) {

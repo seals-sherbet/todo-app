@@ -1665,6 +1665,17 @@ button:focus-visible {
   min-height: 24px;
 }
 
+.menu-repeat-patterns {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--line) 66%, transparent);
+  padding-top: 4px;
+}
+
+.menu-repeat-patterns .menu-repeat-choice {
+  min-height: 24px;
+}
+
 .menu-invites-panel {
   display: grid;
   gap: 6px;
