@@ -2127,10 +2127,12 @@ button:focus-visible {
   gap: 8px;
   align-items: center;
   min-height: 30px;
-  border-radius: 10px;
-  background: var(--tomorrow-row);
-  box-shadow: 0 5px 12px rgba(17, 19, 26, 0.12);
-  padding: 4px 8px 4px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--tomorrow-line) 58%, transparent);
+  padding: 6px 4px;
+}
+
+.scheduled-item:first-child {
+  border-top: 0;
 }
 
 .scheduled-title {
@@ -2184,13 +2186,19 @@ button:focus-visible {
 
 .scheduled-form input,
 .scheduled-date-button {
+  box-sizing: border-box;
+  min-width: 0;
+  width: 100%;
   min-height: 34px;
   border-radius: 999px;
   border-color: var(--tomorrow-line);
   background: var(--tomorrow-input-bg);
+  caret-color: var(--tomorrow-text);
   color: var(--tomorrow-text);
   padding: 0 14px;
   font-size: 0.86rem;
+  line-height: 1.1;
+  text-align: left;
 }
 
 .scheduled-date-button {

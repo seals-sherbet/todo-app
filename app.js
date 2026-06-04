@@ -26,7 +26,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.7";
+const appVersion = "0.2.8";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -773,11 +773,15 @@ scheduledForm?.addEventListener("submit", (event) => {
 
   scheduledQueue.push(createScheduledQueueItem(title, { targetDate }));
   scheduledForm.reset();
-  setScheduledDateValue(getTomorrowDateKey());
-  scheduledInput.focus();
+  setScheduledDateValue(getTomorrowDateKey(), { renderPicker: false });
   persistScheduledQueue();
-  rollScheduledQueueIntoToday({ renderAfter: true });
-  renderScheduledQueue();
+  const rolledToday = rollScheduledQueueIntoToday();
+  if (rolledToday) {
+    render();
+  } else {
+    renderScheduledQueue({ scrollToBottom: true });
+  }
+  focusScheduledInput();
 });
 
 scheduledForm?.addEventListener("keydown", (event) => {
@@ -823,11 +827,19 @@ scheduledList?.addEventListener("click", (event) => {
     const removedIndex = scheduledQueue.findIndex((entry) => entry.id === item.dataset.scheduledId);
     const removedItem = cloneScheduledQueueItem(scheduledQueue[removedIndex]);
     scheduledQueue = scheduledQueue.filter((entry) => entry.id !== item.dataset.scheduledId);
+    if (removedItem) {
+      scheduledQueue.push(createDeletedScheduledQueueItem(removedItem));
+    }
     persistScheduledQueue();
     renderScheduledQueue();
     if (removedItem) {
       showUndo(`Removed "${removedItem.title}" from Scheduled.`, () => {
-        insertScheduledQueueItemAt(removedItem, removedIndex);
+        insertScheduledQueueItemAt({
+          ...removedItem,
+          deleted: false,
+          deletedAt: "",
+          updatedAt: new Date().toISOString()
+        }, removedIndex);
         persistScheduledQueue();
         renderScheduledQueue();
       });
@@ -2864,10 +2876,11 @@ function renderTomorrowQueue(options = {}) {
 
 function renderScheduledQueue(options = {}) {
   const { scrollToBottom = false } = options;
+  const visibleScheduledItems = getSortedScheduledQueue();
   ensureScheduledDateValue();
-  scheduledCount.textContent = String(scheduledQueue.length);
+  scheduledCount.textContent = String(visibleScheduledItems.length);
 
-  if (scheduledQueue.length === 0) {
+  if (visibleScheduledItems.length === 0) {
     const empty = document.createElement("li");
     empty.className = "scheduled-empty";
     empty.textContent = "No scheduled tasks.";
@@ -2876,13 +2889,26 @@ function renderScheduledQueue(options = {}) {
     return;
   }
 
-  scheduledList.replaceChildren(...getSortedScheduledQueue().map(createScheduledQueueElement));
+  scheduledList.replaceChildren(...visibleScheduledItems.map(createScheduledQueueElement));
   updateTomorrowFooterSpace();
   if (scrollToBottom) {
     window.requestAnimationFrame(() => {
       scheduledList.scrollTop = scheduledList.scrollHeight;
     });
   }
+}
+
+function focusScheduledInput() {
+  window.requestAnimationFrame(() => {
+    if (!scheduledInput || activeFooterTab !== "scheduled") return;
+    scheduledInput.focus();
+    const cursorIndex = scheduledInput.value.length;
+    try {
+      scheduledInput.setSelectionRange(cursorIndex, cursorIndex);
+    } catch {
+      // Some mobile browsers can reject selection updates during focus transitions.
+    }
+  });
 }
 
 function ensureScheduledDateValue() {
@@ -3023,8 +3049,9 @@ function getSortedScheduledQueue() {
   return getSortedScheduledQueueItems(scheduledQueue);
 }
 
-function getSortedScheduledQueueItems(queue = []) {
-  return normalizeScheduledQueue(queue).sort((first, second) => {
+function getSortedScheduledQueueItems(queue = [], options = {}) {
+  const { includeDeleted = false } = options;
+  return normalizeScheduledQueue(queue).filter((item) => includeDeleted || !isDeletedScheduledQueueItem(item)).sort((first, second) => {
     const dateCompare = first.targetDate.localeCompare(second.targetDate);
     if (dateCompare) return dateCompare;
     return (first.createdAt || "").localeCompare(second.createdAt || "");
@@ -4323,11 +4350,25 @@ function normalizeTomorrowQueue(queue) {
 }
 
 function createScheduledQueueItem(title, options = {}) {
+  const createdAt = options.createdAt || new Date().toISOString();
   return {
     id: options.id || uid(),
     title,
     targetDate: isDateKey(options.targetDate) ? options.targetDate : getDateKey(),
-    createdAt: options.createdAt || new Date().toISOString()
+    createdAt,
+    updatedAt: options.updatedAt || options.updated_at || createdAt
+  };
+}
+
+function createDeletedScheduledQueueItem(item, deletedAt = new Date().toISOString()) {
+  return {
+    id: item.id,
+    title: item.title || "",
+    targetDate: isDateKey(item.targetDate) ? item.targetDate : getDateKey(),
+    createdAt: item.createdAt || deletedAt,
+    updatedAt: deletedAt,
+    deleted: true,
+    deletedAt
   };
 }
 
@@ -4337,18 +4378,35 @@ function normalizeScheduledQueueItem(item) {
     return title ? createScheduledQueueItem(title) : null;
   }
 
+  if (isDeletedScheduledQueueItem(item)) {
+    const id = typeof item.id === "string" && item.id ? item.id : "";
+    if (!id) return null;
+    const deletedAt = item.deletedAt || item.updatedAt || item.updated_at || item.createdAt || new Date().toISOString();
+    return createDeletedScheduledQueueItem({
+      id,
+      title: item.title || "",
+      targetDate: item.targetDate,
+      createdAt: item.createdAt
+    }, deletedAt);
+  }
+
   const title = item?.title?.trim();
   if (!title) return null;
 
   return createScheduledQueueItem(title, {
     id: item.id,
     targetDate: isDateKey(item.targetDate) ? item.targetDate : getDateKey(),
-    createdAt: item.createdAt
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.updated_at
   });
 }
 
 function normalizeScheduledQueue(queue) {
   return Array.isArray(queue) ? queue.map(normalizeScheduledQueueItem).filter(Boolean) : [];
+}
+
+function isDeletedScheduledQueueItem(item) {
+  return Boolean(item?.deleted || item?.deletedAt);
 }
 
 function loadDeletedSharedTasks() {
@@ -4739,10 +4797,18 @@ function mergeScheduledQueues(primaryQueue = [], secondaryQueue = []) {
 }
 
 function mergeScheduledQueueItem(existing, incoming) {
-  return createScheduledQueueItem(existing.title || incoming.title, {
+  if (isDeletedScheduledQueueItem(existing) || isDeletedScheduledQueueItem(incoming)) {
+    return isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  }
+
+  const winner = isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  const fallback = winner === incoming ? existing : incoming;
+
+  return createScheduledQueueItem(winner.title || fallback.title, {
     id: existing.id || incoming.id,
-    targetDate: getEarliestDateKey(existing.targetDate, incoming.targetDate) || existing.targetDate || incoming.targetDate,
-    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt
+    targetDate: winner.targetDate || fallback.targetDate,
+    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt,
+    updatedAt: getLatestDateValue(existing.updatedAt, incoming.updatedAt) || winner.updatedAt || fallback.updatedAt
   });
 }
 
@@ -4774,7 +4840,12 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
   });
 
   const dueScheduledItems = [];
-  getSortedScheduledQueueItems(scheduled).forEach((item) => {
+  getSortedScheduledQueueItems(scheduled, { includeDeleted: true }).forEach((item) => {
+    if (isDeletedScheduledQueueItem(item)) {
+      remainingScheduledQueue.push(item);
+      return;
+    }
+
     if (item.targetDate > todayKey) {
       remainingScheduledQueue.push(item);
       return;
