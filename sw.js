@@ -1,9 +1,9 @@
-const cacheName = "tasks-cache-v0.2.8";
+const cacheName = "tasks-cache-v0.2.9";
 const assets = [
   "./",
   "./index.html",
-  "./styles.css?v=0.2.8",
-  "./app.js?v=0.2.8",
+  "./styles.css?v=0.2.9",
+  "./app.js?v=0.2.9",
   "./manifest.webmanifest",
   "./icons/icon.svg",
   "./icons/apple-touch-icon.svg"

@@ -26,7 +26,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.8";
+const appVersion = "0.2.9";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -129,23 +129,39 @@ const repeatOptions = [
 ];
 const repeatOptionValues = new Set(repeatOptions.map((option) => option.value));
 const monthlyPatternRepeatMode = "monthly-pattern";
-const monthlyRepeatPatternOptions = [
-  {
-    value: "first-weekday",
-    label: "First Weekday",
-    fullLabel: "first weekday",
-    badge: "First Weekday",
-    kind: "first-weekday"
-  },
-  {
-    value: "last-weekday",
-    label: "Last Weekday",
-    fullLabel: "last weekday",
-    badge: "Last Weekday",
-    kind: "last-weekday"
-  }
+const monthlyRepeatNamedDayOrdinalOptions = [
+  ...Array.from({ length: 4 }, (_, index) => createMonthlyRepeatOrdinalOption(index + 1)),
+  { value: "last", label: "Last", index: -1 }
 ];
-const monthlyRepeatPatternValues = new Set(monthlyRepeatPatternOptions.map((option) => option.value));
+const monthlyRepeatWeekdayOrdinalOptions = [
+  ...Array.from({ length: 20 }, (_, index) => createMonthlyRepeatOrdinalOption(index + 1)),
+  { value: "last", label: "Last", index: -1 }
+];
+const monthlyRepeatDayOptions = [
+  { value: "weekday", label: "Weekday", match: "weekday" },
+  { value: "monday", label: "Monday", day: 1 },
+  { value: "tuesday", label: "Tuesday", day: 2 },
+  { value: "wednesday", label: "Wednesday", day: 3 },
+  { value: "thursday", label: "Thursday", day: 4 },
+  { value: "friday", label: "Friday", day: 5 },
+  { value: "saturday", label: "Saturday", day: 6 },
+  { value: "sunday", label: "Sunday", day: 0 }
+];
+const monthlyRepeatPatternOptions = monthlyRepeatDayOptions.flatMap((dayOption) =>
+  getMonthlyRepeatOrdinalOptionsForDay(dayOption.value).map((ordinal) => ({
+    value: getMonthlyRepeatPatternValue(ordinal.value, dayOption.value),
+    label: `${ordinal.label} ${dayOption.label}`,
+    fullLabel: `${ordinal.fullLabel || ordinal.label.toLowerCase()} ${dayOption.match ? dayOption.label.toLowerCase() : dayOption.label}`,
+    badge: `${ordinal.badgeLabel || ordinal.label} ${dayOption.label}`,
+    ordinal: ordinal.value,
+    ordinalIndex: ordinal.index,
+    day: dayOption.value,
+    dayIndex: dayOption.day,
+    match: dayOption.match
+  }))
+);
+const supportedMonthlyRepeatPatternOptions = monthlyRepeatPatternOptions;
+const monthlyRepeatPatternValues = new Set(supportedMonthlyRepeatPatternOptions.map((option) => option.value));
 
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
@@ -246,6 +262,7 @@ taskBoards.forEach((board) => {
   board.addEventListener("submit", handleTaskBoardSubmit);
   board.addEventListener("keydown", handleTaskBoardKeydown);
   board.addEventListener("input", handleTaskBoardFormInput);
+  board.addEventListener("change", handleTaskBoardChange);
   board.addEventListener("change", handleTaskBoardFormInput);
   board.addEventListener("focusout", handleTaskBoardFocusout);
   board.addEventListener("pointerdown", handleTaskFormPointerDown);
@@ -364,6 +381,16 @@ function handleTaskBoardFormInput(event) {
   if (!taskForm) return;
 
   rememberTaskFormDraft(taskForm);
+}
+
+function handleTaskBoardChange(event) {
+  const repeatSelect = event.target.closest("select[data-action='draft-monthly-pattern-repeat']");
+  if (!repeatSelect) return;
+
+  const picker = repeatSelect.closest(".menu-repeat-pattern-picker");
+  if (repeatSelect.dataset.repeatPatternPart === "day") {
+    syncMonthlyPatternOrdinalSelect(picker);
+  }
 }
 
 function handleTaskFormPointerDown(event) {
@@ -561,6 +588,18 @@ async function handleTaskBoardClick(event) {
     setTaskRepeat(task, "monthly-date", {
       dayOfMonth: normalizeRepeatDay(input?.value)
     });
+    openMenu = null;
+    persistAndRender({ syncShared: false });
+    return;
+  }
+
+  if (button.dataset.action === "save-monthly-pattern-repeat") {
+    if (!isTodayList(list)) return;
+    const picker = button.closest(".menu-repeat-patterns")?.querySelector(".menu-repeat-pattern-picker");
+    const monthlyPattern = getMonthlyPatternValueFromPicker(picker);
+    if (!monthlyPattern) return;
+
+    setTaskRepeat(task, monthlyPatternRepeatMode, { monthlyPattern });
     openMenu = null;
     persistAndRender({ syncShared: false });
     return;
@@ -3788,7 +3827,7 @@ function createRepeatPanel(task) {
     : String(new Date().getDate());
   input.setAttribute("aria-label", "Repeat day of month");
 
-  const save = createActionButton("Monthly day", "save-custom-repeat", "Repeat monthly on this day");
+  const save = createActionButton("Set day", "save-custom-repeat", "Set day of month");
   save.className = `menu-link menu-repeat-custom-save${task.repeat?.mode === "monthly-date" ? " is-active" : ""}`;
 
   custom.append(input, save);
@@ -3796,20 +3835,53 @@ function createRepeatPanel(task) {
 
   const patterns = document.createElement("div");
   patterns.className = "menu-repeat-patterns";
-  monthlyRepeatPatternOptions.forEach((option) => {
-    patterns.append(createRepeatChoice(
-      monthlyPatternRepeatMode,
-      option.label,
-      task.repeat?.mode === monthlyPatternRepeatMode && task.repeat.monthlyPattern === option.value,
-      {
-        repeatPattern: option.value,
-        ariaLabel: `Repeat monthly on the ${option.fullLabel}`
-      }
-    ));
-  });
+  const activePattern = getMonthlyRepeatPattern(
+    task.repeat?.mode === monthlyPatternRepeatMode
+      ? task.repeat.monthlyPattern
+      : monthlyRepeatPatternOptions[0].value
+  ) || monthlyRepeatPatternOptions[0];
+  const activePatternDay = monthlyRepeatDayOptions.some((option) => option.value === activePattern.day)
+    ? activePattern.day
+    : monthlyRepeatDayOptions[0].value;
+  const activeOrdinalOptions = getMonthlyRepeatOrdinalOptionsForDay(activePatternDay);
+  const activePatternOrdinal = activeOrdinalOptions.some((option) => option.value === activePattern.ordinal)
+    ? activePattern.ordinal
+    : activeOrdinalOptions[0]?.value;
+  const patternPicker = document.createElement("div");
+  patternPicker.className = `menu-repeat-pattern-picker${task.repeat?.mode === monthlyPatternRepeatMode ? " is-active" : ""}`;
+  patternPicker.append(
+    createMonthlyRepeatPatternSelect("ordinal", activeOrdinalOptions, activePatternOrdinal, "Repeat monthly ordinal"),
+    createMonthlyRepeatPatternSelect("day", monthlyRepeatDayOptions, activePatternDay, "Repeat monthly day")
+  );
+  const setPattern = createActionButton("Set", "save-monthly-pattern-repeat", "Set monthly repeat pattern");
+  setPattern.className = `menu-link menu-repeat-pattern-save${task.repeat?.mode === monthlyPatternRepeatMode ? " is-active" : ""}`;
+  patternPicker.append(setPattern);
+  patterns.append(patternPicker);
   panel.append(patterns);
 
   return panel;
+}
+
+function createMonthlyRepeatPatternSelect(part, options, value, ariaLabel) {
+  const select = document.createElement("select");
+  select.className = "menu-repeat-pattern-select";
+  select.dataset.action = "draft-monthly-pattern-repeat";
+  select.dataset.repeatPatternPart = part;
+  select.setAttribute("aria-label", ariaLabel);
+
+  options.forEach((option) => {
+    select.append(createMonthlyRepeatPatternOption(option, option.value === value));
+  });
+
+  return select;
+}
+
+function createMonthlyRepeatPatternOption(option, selected = false) {
+  const item = document.createElement("option");
+  item.value = option.value;
+  item.textContent = option.label;
+  item.selected = selected;
+  return item;
 }
 
 function createRepeatChoice(value, label, active = false, options = {}) {
@@ -3890,7 +3962,67 @@ function formatRepeatBadgeLabel(repeat) {
 }
 
 function getMonthlyRepeatPattern(value) {
-  return monthlyRepeatPatternOptions.find((option) => option.value === value) || null;
+  return supportedMonthlyRepeatPatternOptions.find((option) => option.value === value) || null;
+}
+
+function getMonthlyRepeatPatternValue(ordinal, day) {
+  return `${ordinal || ""}-${day || ""}`;
+}
+
+function getMonthlyPatternValueFromPicker(picker) {
+  const day = picker?.querySelector("[data-repeat-pattern-part='day']")?.value;
+  const ordinal = picker?.querySelector("[data-repeat-pattern-part='ordinal']")?.value;
+  const ordinalOptions = getMonthlyRepeatOrdinalOptionsForDay(day);
+  const normalizedOrdinal = ordinalOptions.some((option) => option.value === ordinal)
+    ? ordinal
+    : ordinalOptions[0]?.value;
+
+  return normalizeMonthlyRepeatPattern(getMonthlyRepeatPatternValue(normalizedOrdinal, day));
+}
+
+function syncMonthlyPatternOrdinalSelect(picker) {
+  const ordinalSelect = picker?.querySelector("[data-repeat-pattern-part='ordinal']");
+  const day = picker?.querySelector("[data-repeat-pattern-part='day']")?.value;
+  if (!ordinalSelect || !day) return;
+
+  const currentOrdinal = ordinalSelect.value;
+  const ordinalOptions = getMonthlyRepeatOrdinalOptionsForDay(day);
+  const nextOrdinal = ordinalOptions.some((option) => option.value === currentOrdinal)
+    ? currentOrdinal
+    : ordinalOptions[0]?.value;
+  ordinalSelect.replaceChildren(...ordinalOptions.map((option) => createMonthlyRepeatPatternOption(option, option.value === nextOrdinal)));
+}
+
+function getMonthlyRepeatOrdinalOptionsForDay(day) {
+  return day === "weekday" ? monthlyRepeatWeekdayOrdinalOptions : monthlyRepeatNamedDayOrdinalOptions;
+}
+
+function createMonthlyRepeatOrdinalOption(index) {
+  const namedOrdinals = {
+    1: ["first", "First", "first"],
+    2: ["second", "Second", "second"],
+    3: ["third", "Third", "third"],
+    4: ["fourth", "Fourth", "fourth"]
+  };
+  const named = namedOrdinals[index];
+  if (named) {
+    return {
+      value: named[0],
+      label: named[1],
+      fullLabel: named[2],
+      badgeLabel: formatOrdinal(index),
+      index
+    };
+  }
+
+  const label = formatOrdinal(index);
+  return {
+    value: String(index),
+    label,
+    fullLabel: label.toLowerCase(),
+    badgeLabel: label,
+    index
+  };
 }
 
 function formatOrdinal(day) {
@@ -5830,32 +5962,41 @@ function isMonthlyPatternDueOnDate(patternValue, date) {
   const pattern = getMonthlyRepeatPattern(patternValue);
   if (!pattern) return false;
 
-  if (pattern.kind === "first-weekday") return isFirstWeekdayOfMonth(date);
-  if (pattern.kind === "last-weekday") return isLastWeekdayOfMonth(date);
+  if (pattern.ordinal === "last") {
+    return isLastMonthlyPatternMatch(date, pattern);
+  }
+
+  return getMonthlyPatternMatchOrdinal(date, pattern) === pattern.ordinalIndex;
+}
+
+function getMonthlyPatternMatchOrdinal(date, pattern) {
+  if (!doesDateMatchMonthlyPatternDay(date, pattern)) return 0;
+
+  let count = 0;
+  for (let day = 1; day <= date.getDate(); day += 1) {
+    const candidate = new Date(date.getFullYear(), date.getMonth(), day);
+    if (doesDateMatchMonthlyPatternDay(candidate, pattern)) count += 1;
+  }
+  return count;
+}
+
+function isLastMonthlyPatternMatch(date, pattern) {
+  if (!doesDateMatchMonthlyPatternDay(date, pattern)) return false;
+
+  const lastDay = getLastDayOfMonth(date);
+  for (let day = date.getDate() + 1; day <= lastDay; day += 1) {
+    const candidate = new Date(date.getFullYear(), date.getMonth(), day);
+    if (doesDateMatchMonthlyPatternDay(candidate, pattern)) return false;
+  }
+  return true;
+}
+
+function doesDateMatchMonthlyPatternDay(date, pattern) {
+  if (pattern.match === "weekday") return isWeekday(date);
+  if (pattern.match === "weekend") return isWeekend(date);
+  if (Number.isInteger(pattern.dayIndex)) return date.getDay() === pattern.dayIndex;
 
   return false;
-}
-
-function isFirstWeekdayOfMonth(date) {
-  if (!isWeekday(date)) return false;
-
-  const firstWeekday = new Date(date.getFullYear(), date.getMonth(), 1);
-  while (!isWeekday(firstWeekday)) {
-    firstWeekday.setDate(firstWeekday.getDate() + 1);
-  }
-
-  return date.getDate() === firstWeekday.getDate();
-}
-
-function isLastWeekdayOfMonth(date) {
-  if (!isWeekday(date)) return false;
-
-  const lastWeekday = new Date(date.getFullYear(), date.getMonth() + 1, 0);
-  while (!isWeekday(lastWeekday)) {
-    lastWeekday.setDate(lastWeekday.getDate() - 1);
-  }
-
-  return date.getDate() === lastWeekday.getDate();
 }
 
 function getSafeMonthDay(date, preferredDay) {
