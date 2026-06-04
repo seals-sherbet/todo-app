@@ -37,11 +37,15 @@ create table if not exists public.tasks (
   priority text not null default 'normal',
   completed boolean not null default false,
   completed_at timestamptz,
+  repeat jsonb,
   created_at timestamptz not null default now(),
   position integer not null default 0,
   updated_at timestamptz not null default now(),
   device_id text not null default ''
 );
+
+alter table if exists public.tasks
+add column if not exists repeat jsonb;
 
 create table if not exists public.list_members (
   list_id text not null references public.task_lists(id) on delete cascade,
@@ -233,7 +237,8 @@ create or replace function public.upsert_task_if_newer(
   target_created_at timestamptz,
   target_position integer,
   target_updated_at timestamptz,
-  target_device_id text
+  target_device_id text,
+  target_repeat jsonb default null
 )
 returns table(task_id text)
 language plpgsql
@@ -258,6 +263,7 @@ begin
     priority,
     completed,
     completed_at,
+    repeat,
     created_at,
     position,
     updated_at,
@@ -271,6 +277,7 @@ begin
     target_priority,
     target_completed,
     target_completed_at,
+    target_repeat,
     target_created_at,
     target_position,
     target_updated_at,
@@ -284,6 +291,7 @@ begin
     priority = excluded.priority,
     completed = excluded.completed,
     completed_at = excluded.completed_at,
+    repeat = excluded.repeat,
     created_at = excluded.created_at,
     position = excluded.position,
     updated_at = excluded.updated_at,
@@ -305,7 +313,8 @@ grant execute on function public.upsert_task_if_newer(
   timestamptz,
   integer,
   timestamptz,
-  text
+  text,
+  jsonb
 ) to authenticated;
 
 drop function if exists public.claim_pending_list_invites();

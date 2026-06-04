@@ -26,6 +26,10 @@ window.TASKS_SYNC_CONFIG = {
 
 The anon key is designed to be public in browser apps. Do not use the service role key in this file.
 
+## Existing project schema updates
+
+When `supabase-schema.sql` changes, open the Supabase SQL editor and rerun the full file. The schema is written to be rerunnable with `if exists` / `if not exists` guards, and this keeps the live database aligned with the app's sync payloads.
+
 ## 3. Configure email code sign-in
 
 In Supabase, go to Authentication > Email Templates > Magic Link.

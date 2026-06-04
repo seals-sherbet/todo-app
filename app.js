@@ -14,6 +14,8 @@ const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const syncLastSuccessKey = "tasks.lastSyncSuccess.v1";
 const deletedTaskTitle = "__tasks_deleted__";
+const sharedTaskRowFields = "id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at,repeat";
+const legacySharedTaskRowFields = "id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at";
 const todayListId = "pinned-today";
 const todayListType = "today";
 const projectListName = "Projects";
@@ -26,7 +28,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.9";
+const appVersion = "0.2.10";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -1438,6 +1440,13 @@ async function loadRemoteState(options = {}) {
   }
 
   const mergedSharedLists = applySharedListOrder(mergeSharedLists(localStandingLists, sharedResult.lists), privateLists);
+  if (trustLocalState && sharedResult.supportsTaskRepeat && hasSharedRepeatBackfill(localStandingLists, sharedResult.lists)) {
+    const sharedRepeatError = await pushSharedLists(mergedSharedLists);
+    if (sharedRepeatError) {
+      reportSyncError("Shared list sync", sharedRepeatError);
+      return;
+    }
+  }
 
   applyRemoteState({
     lists: [...privateLists, ...mergedSharedLists],
@@ -1741,20 +1750,24 @@ async function fetchSharedLists() {
   let memberRows = [];
   let sharedMarkerRows = [];
   let inviteRows = [];
+  let supportsTaskRepeat = true;
 
   if (listIds.length > 0) {
-    const taskResult = await syncClient
-      .from("tasks")
-      .select("id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at")
-      .in("list_id", listIds)
-      .order("position", { ascending: true })
-      .order("created_at", { ascending: true });
+    const taskResult = await selectSharedTaskRows((fields) =>
+      syncClient
+        .from("tasks")
+        .select(fields)
+        .in("list_id", listIds)
+        .order("position", { ascending: true })
+        .order("created_at", { ascending: true })
+    );
 
     if (taskResult.error) {
       return { lists: [], error: taskResult.error };
     }
 
     taskRows = taskResult.data || [];
+    supportsTaskRepeat = !taskResult.missingRepeatColumn;
 
     const memberResult = await syncClient
       .from("list_members")
@@ -1815,6 +1828,7 @@ async function fetchSharedLists() {
       list.tasks = filterTasksDeletedByTombstones(list.tasks, list.deletedTaskTombstones);
       return list;
     }),
+    supportsTaskRepeat,
     error: null
   };
 }
@@ -1977,10 +1991,12 @@ function ensureManagedListOwner(list) {
 async function syncSharedTasks(list, updatedAt, options = {}) {
   const syncTaskOrder = Boolean(options.syncTaskOrder);
   const taskRows = list.tasks.map((task, index) => taskToRow(task, list.id, index, updatedAt));
-  const existingResult = await syncClient
-    .from("tasks")
-    .select("id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at")
-    .eq("list_id", list.id);
+  const existingResult = await selectSharedTaskRows((fields) =>
+    syncClient
+      .from("tasks")
+      .select(fields)
+      .eq("list_id", list.id)
+  );
 
   if (existingResult.error) return existingResult.error;
 
@@ -1998,6 +2014,16 @@ async function syncSharedTasks(list, updatedAt, options = {}) {
 
   clearSyncedSharedDeletionTombstones(list.id);
   return null;
+}
+
+async function selectSharedTaskRows(buildQuery) {
+  const result = await buildQuery(sharedTaskRowFields);
+  if (!isMissingRepeatColumnError(result.error)) return result;
+  const fallback = await buildQuery(legacySharedTaskRowFields);
+  return {
+    ...fallback,
+    missingRepeatColumn: true
+  };
 }
 
 function preserveRemoteTaskPositions(taskRows, existingRows = [], syncTaskOrder = false) {
@@ -2027,10 +2053,12 @@ async function upsertTaskRow(row) {
     target_created_at: row.created_at,
     target_position: row.position,
     target_updated_at: row.updated_at,
-    target_device_id: row.device_id
+    target_device_id: row.device_id,
+    target_repeat: row.repeat
   });
 
   if (!result.error) return null;
+  if (isMissingRepeatColumnError(result.error)) return upsertLegacyTaskRow(row);
   if (!isMissingRpcError(result.error)) return result.error;
 
   const fallbackResult = await syncClient
@@ -2038,11 +2066,54 @@ async function upsertTaskRow(row) {
     .upsert(row, {
       onConflict: "id"
     });
+  if (isMissingRepeatColumnError(fallbackResult.error)) return upsertLegacyTaskRow(row);
+  return fallbackResult.error;
+}
+
+async function upsertLegacyTaskRow(row) {
+  const legacyRow = stripTaskRepeatFromRow(row);
+  const result = await syncClient.rpc("upsert_task_if_newer", {
+    target_id: legacyRow.id,
+    target_list_id: legacyRow.list_id,
+    target_title: legacyRow.title,
+    target_due: legacyRow.due,
+    target_priority: legacyRow.priority,
+    target_completed: legacyRow.completed,
+    target_completed_at: legacyRow.completed_at,
+    target_created_at: legacyRow.created_at,
+    target_position: legacyRow.position,
+    target_updated_at: legacyRow.updated_at,
+    target_device_id: legacyRow.device_id
+  });
+
+  if (!result.error) return null;
+  if (!isMissingRpcError(result.error)) return result.error;
+
+  const fallbackResult = await syncClient
+    .from("tasks")
+    .upsert(legacyRow, {
+      onConflict: "id"
+    });
   return fallbackResult.error;
 }
 
 function isMissingRpcError(error) {
-  return error?.code === "42883" || /function .* does not exist/i.test(error?.message || "");
+  return error?.code === "42883"
+    || error?.code === "PGRST202"
+    || /function .* does not exist/i.test(error?.message || "")
+    || /could not find .*function/i.test(error?.message || "");
+}
+
+function isMissingRepeatColumnError(error) {
+  const message = `${error?.message || ""} ${error?.details || ""}`.toLowerCase();
+  return (error?.code === "42703" && message.includes("repeat"))
+    || (message.includes("repeat") && message.includes("does not exist"))
+    || (message.includes("repeat") && message.includes("schema cache"));
+}
+
+function stripTaskRepeatFromRow(row) {
+  const { repeat: _repeat, ...legacyRow } = row;
+  return legacyRow;
 }
 
 async function deleteRemoteList(listId) {
@@ -4406,7 +4477,8 @@ function taskToRow(task, listId, position, updatedAt) {
     created_at: task.createdAt || updatedAt,
     position,
     updated_at: taskUpdatedAt,
-    device_id: syncDeviceId
+    device_id: syncDeviceId,
+    repeat: normalizeTaskRepeat(task.repeat)
   };
 }
 
@@ -4447,6 +4519,7 @@ function rowToTask(row) {
     priority: row.priority || "normal",
     completed: row.completed,
     completedAt: row.completed_at || "",
+    repeat: row.repeat || row.recurrence,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   });
@@ -4760,7 +4833,40 @@ function shouldPushListRow(row, existingRow) {
 
 function shouldPushTaskRow(row, existingRow) {
   if (!existingRow?.updated_at) return true;
-  return isTimestampNewer(row.updated_at, existingRow.updated_at);
+  if (isTimestampNewer(row.updated_at, existingRow.updated_at)) return true;
+  if (getTimestamp(row.updated_at) === getTimestamp(existingRow.updated_at)) {
+    return !areTaskRepeatsEqual(row.repeat, existingRow.repeat);
+  }
+  return false;
+}
+
+function hasSharedRepeatBackfill(localLists = [], remoteLists = []) {
+  const remoteTasksById = new Map();
+  remoteLists.forEach((list) => {
+    list.tasks.forEach((task) => {
+      const normalizedTask = normalizeTask(task);
+      remoteTasksById.set(normalizedTask.id, normalizedTask);
+    });
+  });
+
+  return localLists.some((list) =>
+    list.tasks.some((task) => {
+      const localTask = normalizeTask(task);
+      const remoteTask = remoteTasksById.get(localTask.id);
+      if (!remoteTask) return false;
+      if (isTimestampNewer(remoteTask.updatedAt, localTask.updatedAt)) return false;
+      return !areTaskRepeatsEqual(localTask.repeat, remoteTask.repeat);
+    })
+  );
+}
+
+function areTaskRepeatsEqual(firstRepeat, secondRepeat) {
+  return getTaskRepeatSignature(firstRepeat) === getTaskRepeatSignature(secondRepeat);
+}
+
+function getTaskRepeatSignature(repeat) {
+  const normalizedRepeat = normalizeTaskRepeat(repeat);
+  return normalizedRepeat ? JSON.stringify(normalizedRepeat) : "";
 }
 
 function markListUpdated(list, updatedAt = new Date().toISOString()) {
