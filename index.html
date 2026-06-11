@@ -11,7 +11,7 @@
     <link rel="manifest" href="manifest.webmanifest">
     <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.svg">
-    <link rel="stylesheet" href="styles.css?v=0.2.10">
+    <link rel="stylesheet" href="styles.css?v=0.2.11">
   </head>
   <body>
     <main class="app-shell">
@@ -34,13 +34,23 @@
                 <div class="settings-option-group">
                   <p class="settings-option-label">Footer</p>
                   <label class="settings-toggle-row">
-                    <span>Projects</span>
-                    <input id="showProjectsOption" type="checkbox">
+                    <span>Tomorrow</span>
+                    <input id="showTomorrowOption" type="checkbox">
                     <span class="settings-switch" aria-hidden="true"></span>
                   </label>
                   <label class="settings-toggle-row">
-                    <span>Tomorrow</span>
-                    <input id="showTomorrowOption" type="checkbox">
+                    <span>Scheduled</span>
+                    <input id="showScheduledOption" type="checkbox">
+                    <span class="settings-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-toggle-row">
+                    <span>On hold</span>
+                    <input id="showOnHoldOption" type="checkbox">
+                    <span class="settings-switch" aria-hidden="true"></span>
+                  </label>
+                  <label class="settings-toggle-row">
+                    <span>Projects</span>
+                    <input id="showProjectsOption" type="checkbox">
                     <span class="settings-switch" aria-hidden="true"></span>
                   </label>
                 </div>
@@ -123,13 +133,17 @@
             <span id="tomorrowLabel">Tomorrow</span>
             <span class="footer-tab-count" id="tomorrowCount">0</span>
           </button>
-          <button class="footer-tab" id="footerProjectsTab" type="button" role="tab" data-footer-tab="projects" aria-controls="footerProjectsPanel">
-            <span>Projects</span>
-            <span class="footer-tab-count" id="projectCount">0</span>
-          </button>
           <button class="footer-tab" id="footerScheduledTab" type="button" role="tab" data-footer-tab="scheduled" aria-controls="footerScheduledPanel">
             <span>Scheduled</span>
             <span class="footer-tab-count" id="scheduledCount">0</span>
+          </button>
+          <button class="footer-tab" id="footerOnHoldTab" type="button" role="tab" data-footer-tab="on-hold" aria-controls="footerOnHoldPanel">
+            <span>On hold</span>
+            <span class="footer-tab-count" id="onHoldCount">0</span>
+          </button>
+          <button class="footer-tab" id="footerProjectsTab" type="button" role="tab" data-footer-tab="projects" aria-controls="footerProjectsPanel">
+            <span>Projects</span>
+            <span class="footer-tab-count" id="projectCount">0</span>
           </button>
         </div>
 
@@ -141,10 +155,6 @@
               <button class="primary-button" type="submit">Add</button>
             </form>
           </div>
-        </section>
-
-        <section class="project-section footer-panel" id="footerProjectsPanel" data-footer-panel="projects" role="tabpanel" aria-labelledby="footerProjectsTab">
-          <ul id="projectBoard" class="list-board project-board"></ul>
         </section>
 
         <section class="scheduled-section footer-panel" id="footerScheduledPanel" data-footer-panel="scheduled" role="tabpanel" aria-labelledby="footerScheduledTab">
@@ -172,6 +182,18 @@
               <div class="scheduled-date-grid" id="scheduledDateGrid"></div>
             </div>
           </form>
+        </section>
+
+        <section class="on-hold-section footer-panel" id="footerOnHoldPanel" data-footer-panel="on-hold" role="tabpanel" aria-labelledby="footerOnHoldTab">
+          <ul class="on-hold-list" id="onHoldList"></ul>
+          <form class="on-hold-form" id="onHoldForm" autocomplete="off">
+            <input id="onHoldInput" name="title" type="text" placeholder="Add on hold" aria-label="Add on hold task" required maxlength="120">
+            <button class="primary-button" type="submit">Add</button>
+          </form>
+        </section>
+
+        <section class="project-section footer-panel" id="footerProjectsPanel" data-footer-panel="projects" role="tabpanel" aria-labelledby="footerProjectsTab">
+          <ul id="projectBoard" class="list-board project-board"></ul>
         </section>
       </section>
     </main>
@@ -226,6 +248,6 @@
 
     <script src="sync-config.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-    <script src="app.js?v=0.2.10"></script>
+    <script src="app.js?v=0.2.11"></script>
   </body>
 </html>

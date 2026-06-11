@@ -3,6 +3,7 @@ const legacyStorageKey = "tasks.v1";
 const themeKey = "tasks.theme";
 const tomorrowQueueKey = "tasks.tomorrowQueue.v1";
 const scheduledQueueKey = "tasks.scheduledQueue.v1";
+const onHoldQueueKey = "tasks.onHoldQueue.v1";
 const tomorrowCollapsedKey = "tasks.tomorrowCollapsed.v1";
 const footerTabKey = "tasks.footerTab.v1";
 const appOptionsKey = "tasks.options.v1";
@@ -14,6 +15,8 @@ const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const syncLastSuccessKey = "tasks.lastSyncSuccess.v1";
 const deletedTaskTitle = "__tasks_deleted__";
+const privateDocumentFields = "lists,tomorrow_queue,scheduled_queue,on_hold_queue,updated_at,device_id";
+const legacyPrivateDocumentFields = "lists,tomorrow_queue,scheduled_queue,updated_at,device_id";
 const sharedTaskRowFields = "id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at,repeat";
 const legacySharedTaskRowFields = "id,list_id,title,due,priority,completed,completed_at,created_at,position,updated_at";
 const todayListId = "pinned-today";
@@ -28,7 +31,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.10";
+const appVersion = "0.2.11";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -46,6 +49,8 @@ const optionsToggleButton = document.querySelector("#optionsToggleButton");
 const settingsOptions = document.querySelector("#settingsOptions");
 const showProjectsOption = document.querySelector("#showProjectsOption");
 const showTomorrowOption = document.querySelector("#showTomorrowOption");
+const showScheduledOption = document.querySelector("#showScheduledOption");
+const showOnHoldOption = document.querySelector("#showOnHoldOption");
 const compactModeOption = document.querySelector("#compactModeOption");
 const weekendModeOption = document.querySelector("#weekendModeOption");
 const updateAppButton = document.querySelector("#updateAppButton");
@@ -84,6 +89,7 @@ const footerTabs = [...document.querySelectorAll("[data-footer-tab]")];
 const footerPanels = [...document.querySelectorAll("[data-footer-panel]")];
 const projectSection = document.querySelector(".project-section");
 const scheduledSection = document.querySelector(".scheduled-section");
+const onHoldSection = document.querySelector(".on-hold-section");
 const tomorrowSection = document.querySelector(".tomorrow-section");
 const tomorrowToggle = document.querySelector("#tomorrowToggle");
 const tomorrowLabel = document.querySelector("#tomorrowLabel");
@@ -91,6 +97,7 @@ const tomorrowBody = document.querySelector("#tomorrowBody");
 const tomorrowCount = document.querySelector("#tomorrowCount");
 const projectCount = document.querySelector("#projectCount");
 const scheduledCount = document.querySelector("#scheduledCount");
+const onHoldCount = document.querySelector("#onHoldCount");
 const scheduledList = document.querySelector("#scheduledList");
 const scheduledForm = document.querySelector("#scheduledForm");
 const scheduledInput = document.querySelector("#scheduledInput");
@@ -99,6 +106,9 @@ const scheduledDateButton = document.querySelector("#scheduledDateButton");
 const scheduledDatePicker = document.querySelector("#scheduledDatePicker");
 const scheduledDatePickerLabel = document.querySelector("#scheduledDatePickerLabel");
 const scheduledDateGrid = document.querySelector("#scheduledDateGrid");
+const onHoldList = document.querySelector("#onHoldList");
+const onHoldForm = document.querySelector("#onHoldForm");
+const onHoldInput = document.querySelector("#onHoldInput");
 const tomorrowList = document.querySelector("#tomorrowList");
 const tomorrowForm = document.querySelector("#tomorrowForm");
 const tomorrowInput = document.querySelector("#tomorrowInput");
@@ -178,6 +188,7 @@ persistArchiveState();
 let appOptions = loadAppOptions();
 let tomorrowQueue = loadTomorrowQueue();
 let scheduledQueue = loadScheduledQueue();
+let onHoldQueue = loadOnHoldQueue();
 let filter = "all";
 let dragState = null;
 let openMenu = null;
@@ -233,6 +244,8 @@ if ("ResizeObserver" in window) {
   const footerResizeObserver = new ResizeObserver(updateTomorrowFooterSpace);
   if (footerTray) footerResizeObserver.observe(footerTray);
   if (tomorrowSection) footerResizeObserver.observe(tomorrowSection);
+  if (scheduledSection) footerResizeObserver.observe(scheduledSection);
+  if (onHoldSection) footerResizeObserver.observe(onHoldSection);
   if (projectSection) footerResizeObserver.observe(projectSection);
 }
 
@@ -253,7 +266,12 @@ listForm.addEventListener("submit", (event) => {
   const list = createList(name, false, [], {
     ownerId: getActiveUserId()
   });
+  const shouldRevealNewList = !shouldShowList(list);
   lists = ensureTodayList([...lists, list]);
+  if (shouldRevealNewList) {
+    filter = "all";
+    filterMenuOpen = false;
+  }
   markSharedListOrderUpdated();
   listForm.reset();
   listName.focus();
@@ -692,6 +710,34 @@ async function handleTaskBoardClick(event) {
     return;
   }
 
+  if (button.dataset.action === "move-task-on-hold") {
+    if (!isTodayList(list)) return;
+    const movedTask = cloneTask(task);
+    const movedTaskIndex = list.tasks.findIndex((item) => item.id === task.id);
+    const queueItem = createOnHoldQueueItem(task.title);
+    const deletedAt = new Date().toISOString();
+    rememberTaskDeletion(list, movedTask, deletedAt);
+    onHoldQueue.push(queueItem);
+    list.tasks = list.tasks.filter((item) => item.id !== task.id);
+    if (isEditingTask(list.id, task.id)) {
+      editingTask = null;
+    }
+    openMenu = null;
+    persistOnHoldQueue();
+    persistAndRender({ syncShared: false });
+    renderOnHoldQueue({ scrollToBottom: true });
+    showUndo(`Moved "${movedTask.title}" to On hold.`, () => {
+      onHoldQueue = onHoldQueue.filter((entry) => entry.id !== queueItem.id);
+      forgetTaskDeletion(findList(list.id), movedTask.id);
+      markTaskUpdated(movedTask);
+      insertTaskAt(findList(list.id), movedTask, movedTaskIndex);
+      persistOnHoldQueue();
+      persistAndRender({ syncShared: false });
+      renderOnHoldQueue();
+    });
+    return;
+  }
+
   persistAndRender({ sharedListIds: [list.id] });
 }
 
@@ -888,6 +934,107 @@ scheduledList?.addEventListener("click", (event) => {
   }
 });
 
+onHoldForm?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const title = onHoldInput.value.trim();
+  if (!title) return;
+
+  onHoldQueue.push(createOnHoldQueueItem(title));
+  onHoldForm.reset();
+  onHoldInput.focus();
+  persistOnHoldQueue();
+  renderOnHoldQueue({ scrollToBottom: true });
+});
+
+onHoldForm?.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || event.isComposing || event.target !== onHoldInput) return;
+
+  event.preventDefault();
+  onHoldForm.requestSubmit();
+});
+
+onHoldList?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-on-hold-action]");
+  if (!button) return;
+
+  const item = button.closest("[data-on-hold-id]");
+  if (!item) return;
+
+  const removedIndex = onHoldQueue.findIndex((entry) => entry.id === item.dataset.onHoldId);
+  const removedItem = cloneOnHoldQueueItem(onHoldQueue[removedIndex]);
+  if (!removedItem) return;
+
+  onHoldQueue = onHoldQueue.filter((entry) => entry.id !== item.dataset.onHoldId);
+  onHoldQueue.push(createDeletedOnHoldQueueItem(removedItem));
+
+  if (button.dataset.onHoldAction === "today") {
+    lists = ensureTodayList(lists);
+    const todayList = lists.find(isTodayList);
+    if (!todayList) return;
+    const createdTask = createTask(removedItem.title);
+    todayList.tasks.push(createdTask);
+    persistOnHoldQueue();
+    persistAndRender({ syncShared: false });
+    renderOnHoldQueue();
+    showUndo(`Moved "${removedItem.title}" to Today.`, () => {
+      lists = ensureTodayList(lists);
+      const currentTodayList = lists.find(isTodayList);
+      if (currentTodayList) {
+        rememberPrivateTaskDeletion(currentTodayList, createdTask);
+        currentTodayList.tasks = currentTodayList.tasks.filter((task) => task.id !== createdTask.id);
+      }
+      insertOnHoldQueueItemAt({
+        ...removedItem,
+        deleted: false,
+        deletedAt: "",
+        updatedAt: new Date().toISOString()
+      }, removedIndex);
+      persistOnHoldQueue();
+      persistAndRender({ syncShared: false });
+      renderOnHoldQueue();
+    });
+    return;
+  }
+
+  if (button.dataset.onHoldAction === "tomorrow") {
+    const queueItem = createTomorrowQueueItem(removedItem.title);
+    tomorrowQueue.push(queueItem);
+    persistOnHoldQueue();
+    persistTomorrowQueue();
+    renderOnHoldQueue();
+    renderTomorrowQueue({ scrollToBottom: activeFooterTab === "tomorrow" });
+    showUndo(`Bumped "${removedItem.title}" to Tomorrow.`, () => {
+      tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== queueItem.id);
+      insertOnHoldQueueItemAt({
+        ...removedItem,
+        deleted: false,
+        deletedAt: "",
+        updatedAt: new Date().toISOString()
+      }, removedIndex);
+      persistOnHoldQueue();
+      persistTomorrowQueue();
+      renderOnHoldQueue();
+      renderTomorrowQueue();
+    });
+    return;
+  }
+
+  if (button.dataset.onHoldAction === "delete") {
+    persistOnHoldQueue();
+    renderOnHoldQueue();
+    showUndo(`Removed "${removedItem.title}" from On hold.`, () => {
+      insertOnHoldQueueItemAt({
+        ...removedItem,
+        deleted: false,
+        deletedAt: "",
+        updatedAt: new Date().toISOString()
+      }, removedIndex);
+      persistOnHoldQueue();
+      renderOnHoldQueue();
+    });
+  }
+});
+
 tomorrowForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const title = tomorrowInput.value.trim();
@@ -988,6 +1135,18 @@ showProjectsOption.addEventListener("change", () => {
 
 showTomorrowOption.addEventListener("change", () => {
   appOptions.showTomorrow = showTomorrowOption.checked;
+  saveAppOptions();
+  render();
+});
+
+showScheduledOption.addEventListener("change", () => {
+  appOptions.showScheduled = showScheduledOption.checked;
+  saveAppOptions();
+  render();
+});
+
+showOnHoldOption.addEventListener("change", () => {
+  appOptions.showOnHold = showOnHoldOption.checked;
   saveAppOptions();
   render();
 });
@@ -1137,6 +1296,12 @@ function persistTomorrowQueue() {
 
 function persistScheduledQueue() {
   localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
+  rememberLocalTaskStateUser();
+  queueRemoteSync({ syncShared: false });
+}
+
+function persistOnHoldQueue() {
+  localStorage.setItem(onHoldQueueKey, JSON.stringify(onHoldQueue));
   rememberLocalTaskStateUser();
   queueRemoteSync({ syncShared: false });
 }
@@ -1401,31 +1566,35 @@ async function loadRemoteState(options = {}) {
   const remoteScheduledQueue = privateDocument
     ? normalizeScheduledQueue(privateDocument.scheduled_queue)
     : [];
+  const remoteOnHoldQueue = privateDocument
+    ? normalizeOnHoldQueue(privateDocument.on_hold_queue)
+    : [];
   const mergedPrivateState = privateDocument
     ? (trustLocalState
-      ? mergePrivateState(localPrivateLists, tomorrowQueue, scheduledQueue, remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue)
-      : rollDueQueuesIntoPrivateState(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue))
-    : rollDueQueuesIntoPrivateState(localPrivateLists, trustLocalState ? tomorrowQueue : [], trustLocalState ? scheduledQueue : []);
+      ? mergePrivateState(localPrivateLists, tomorrowQueue, scheduledQueue, onHoldQueue, remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue, remoteOnHoldQueue)
+      : rollDueQueuesIntoPrivateState(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue, remoteOnHoldQueue))
+    : rollDueQueuesIntoPrivateState(localPrivateLists, trustLocalState ? tomorrowQueue : [], trustLocalState ? scheduledQueue : [], trustLocalState ? onHoldQueue : []);
   const privateLists = mergedPrivateState.lists;
   const nextTomorrowQueue = mergedPrivateState.tomorrowQueue;
   const nextScheduledQueue = mergedPrivateState.scheduledQueue;
+  const nextOnHoldQueue = mergedPrivateState.onHoldQueue;
 
   if (documentStandingLists.length > 0) {
     await pushSharedLists(documentStandingLists);
-    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
+    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue, nextOnHoldQueue);
     sharedResult = await fetchSharedLists();
     if (sharedResult.error) {
       handleRemoteSyncError("Shared list sync", sharedResult.error, { retryTransientErrors });
       return;
     }
-  } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue, privateLists, nextTomorrowQueue, nextScheduledQueue)) {
-    const privateError = await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
+  } else if (privateDocument && hasPrivateStateChanged(remotePrivateLists, remoteTomorrowQueue, remoteScheduledQueue, remoteOnHoldQueue, privateLists, nextTomorrowQueue, nextScheduledQueue, nextOnHoldQueue)) {
+    const privateError = await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue, nextOnHoldQueue);
     if (privateError) {
       reportSyncError("Private sync", privateError);
       return;
     }
   } else if (!privateDocument) {
-    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue);
+    await pushPrivateState(privateLists, nextTomorrowQueue, nextScheduledQueue, nextOnHoldQueue);
   }
 
   const sharedListIds = new Set(sharedResult.lists.map((list) => list.id));
@@ -1452,6 +1621,7 @@ async function loadRemoteState(options = {}) {
     lists: [...privateLists, ...mergedSharedLists],
     tomorrowQueue: nextTomorrowQueue,
     scheduledQueue: nextScheduledQueue,
+    onHoldQueue: nextOnHoldQueue,
     updatedAt: privateDocument?.updated_at || new Date().toISOString()
   });
   markSyncSuccess();
@@ -1573,7 +1743,7 @@ async function pushRemoteState() {
   const sharedLists = getPendingSharedLists();
   const syncTaskOrderListIds = new Set(syncPendingTaskOrderListIds);
 
-  const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, scheduledQueue, updatedAt);
+  const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, scheduledQueue, onHoldQueue, updatedAt);
   if (privateError) {
     reportSyncError("Private sync", privateError);
     return;
@@ -1676,11 +1846,13 @@ function applyRemoteState(remoteState) {
   lists = applyArchiveMetadataToLists(lists);
   tomorrowQueue = normalizeTomorrowQueue(remoteState.tomorrowQueue);
   scheduledQueue = normalizeScheduledQueue(remoteState.scheduledQueue);
+  onHoldQueue = normalizeOnHoldQueue(remoteState.onHoldQueue);
   syncLastRemoteUpdatedAt = remoteState.updatedAt || "";
 
   localStorage.setItem(storageKey, JSON.stringify(lists));
   localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
   localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
+  localStorage.setItem(onHoldQueueKey, JSON.stringify(onHoldQueue));
   rememberLocalTaskStateUser();
   persistDeletedSharedTasks();
   persistArchiveState();
@@ -1713,6 +1885,7 @@ function resetInMemoryTaskStateForAccountBoundary() {
   lists = [];
   tomorrowQueue = [];
   scheduledQueue = [];
+  onHoldQueue = [];
   expandedCompletedLists.clear();
   activeTaskFormListId = null;
   editingListId = null;
@@ -1726,11 +1899,22 @@ function resetInMemoryTaskStateForAccountBoundary() {
 }
 
 async function fetchPrivateDocument() {
-  return syncClient
+  const result = await syncClient
     .from("task_documents")
-    .select("lists,tomorrow_queue,scheduled_queue,updated_at,device_id")
+    .select(privateDocumentFields)
     .eq("user_id", syncUser.id)
     .maybeSingle();
+  if (!isMissingOnHoldColumnError(result.error)) return result;
+
+  const fallback = await syncClient
+    .from("task_documents")
+    .select(legacyPrivateDocumentFields)
+    .eq("user_id", syncUser.id)
+    .maybeSingle();
+  return {
+    ...fallback,
+    missingOnHoldColumn: true
+  };
 }
 
 async function fetchSharedLists() {
@@ -1833,22 +2017,24 @@ async function fetchSharedLists() {
   };
 }
 
-async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, scheduled = scheduledQueue, updatedAt = new Date().toISOString()) {
-  const mergedState = await getMergedPrivateStateForPush(privateLists, queue, scheduled);
+async function pushPrivateState(privateLists = getPrivateLists(lists), queue = tomorrowQueue, scheduled = scheduledQueue, onHold = onHoldQueue, updatedAt = new Date().toISOString()) {
+  const mergedState = await getMergedPrivateStateForPush(privateLists, queue, scheduled, onHold);
   if (mergedState.error) return mergedState.error;
 
-  const { error } = await syncClient
+  let { error } = await syncClient
     .from("task_documents")
-    .upsert({
-      user_id: syncUser.id,
-      lists: mergedState.lists,
-      tomorrow_queue: mergedState.tomorrowQueue,
-      scheduled_queue: mergedState.scheduledQueue,
-      updated_at: updatedAt,
-      device_id: syncDeviceId
-    }, {
+    .upsert(privateStateToDocumentRow(mergedState, updatedAt), {
       onConflict: "user_id"
     });
+
+  if (isMissingOnHoldColumnError(error)) {
+    const fallbackResult = await syncClient
+      .from("task_documents")
+      .upsert(stripOnHoldQueueFromDocumentRow(privateStateToDocumentRow(mergedState, updatedAt)), {
+        onConflict: "user_id"
+      });
+    error = fallbackResult.error;
+  }
 
   if (!error) {
     applySyncedAccountOptions(getAccountOptionsFromLists(mergedState.lists));
@@ -1856,9 +2042,11 @@ async function pushPrivateState(privateLists = getPrivateLists(lists), queue = t
     lists = applyArchiveMetadataToLists(ensureTodayList([...mergedState.lists, ...getStandingLists(lists)]));
     tomorrowQueue = mergedState.tomorrowQueue;
     scheduledQueue = mergedState.scheduledQueue;
+    onHoldQueue = mergedState.onHoldQueue;
     localStorage.setItem(storageKey, JSON.stringify(lists));
     localStorage.setItem(tomorrowQueueKey, JSON.stringify(tomorrowQueue));
     localStorage.setItem(scheduledQueueKey, JSON.stringify(scheduledQueue));
+    localStorage.setItem(onHoldQueueKey, JSON.stringify(onHoldQueue));
     rememberLocalTaskStateUser();
     persistArchiveState();
   }
@@ -2111,8 +2299,32 @@ function isMissingRepeatColumnError(error) {
     || (message.includes("repeat") && message.includes("schema cache"));
 }
 
+function isMissingOnHoldColumnError(error) {
+  const message = `${error?.message || ""} ${error?.details || ""}`.toLowerCase();
+  return (error?.code === "42703" && message.includes("on_hold_queue"))
+    || (message.includes("on_hold_queue") && message.includes("does not exist"))
+    || (message.includes("on_hold_queue") && message.includes("schema cache"));
+}
+
 function stripTaskRepeatFromRow(row) {
   const { repeat: _repeat, ...legacyRow } = row;
+  return legacyRow;
+}
+
+function privateStateToDocumentRow(state, updatedAt) {
+  return {
+    user_id: syncUser.id,
+    lists: state.lists,
+    tomorrow_queue: state.tomorrowQueue,
+    scheduled_queue: state.scheduledQueue,
+    on_hold_queue: state.onHoldQueue,
+    updated_at: updatedAt,
+    device_id: syncDeviceId
+  };
+}
+
+function stripOnHoldQueueFromDocumentRow(row) {
+  const { on_hold_queue: _onHoldQueue, ...legacyRow } = row;
   return legacyRow;
 }
 
@@ -2528,6 +2740,19 @@ function loadScheduledQueue() {
   return [];
 }
 
+function loadOnHoldQueue() {
+  try {
+    const savedQueue = JSON.parse(localStorage.getItem(onHoldQueueKey));
+    if (Array.isArray(savedQueue)) {
+      return savedQueue.map(normalizeOnHoldQueueItem).filter(Boolean);
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
+}
+
 function loadCompletedArchiveText() {
   return mergeArchiveText(localStorage.getItem(completedArchiveKey) || "");
 }
@@ -2550,6 +2775,8 @@ function normalizeAppOptions(options = {}) {
   return {
     showProjects: options.showProjects !== false,
     showTomorrow: options.showTomorrow !== false,
+    showScheduled: options.showScheduled !== false,
+    showOnHold: options.showOnHold !== false,
     tomorrowMode: options.tomorrowMode === "weekdays" ? "weekdays" : "daily",
     tomorrowModeUpdatedAt: isValidDateValue(options.tomorrowModeUpdatedAt || options.updatedAt)
       ? options.tomorrowModeUpdatedAt || options.updatedAt
@@ -2747,11 +2974,12 @@ function render() {
   renderSettingsMenu();
   renderTomorrowQueue();
   renderScheduledQueue();
+  renderOnHoldQueue();
   listComposer.hidden = filter === "hidden";
   projectSection.hidden = !appOptions.showProjects;
   tomorrowSection.hidden = !appOptions.showTomorrow;
   emptyState.hidden = visibleLists.length + (appOptions.showProjects ? visibleProjectLists.length : 0) > 0;
-  document.body.classList.toggle("has-no-pinned-footer", !appOptions.showProjects && !appOptions.showTomorrow);
+  document.body.classList.toggle("has-no-pinned-footer", getVisibleFooterTabs().length === 0);
   document.body.classList.toggle("is-compact", appOptions.compactMode);
 
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
@@ -2785,6 +3013,8 @@ function renderSettingsMenu() {
   themeToggle.title = isDark ? "Switch to light mode" : "Switch to dark mode";
   showProjectsOption.checked = appOptions.showProjects;
   showTomorrowOption.checked = appOptions.showTomorrow;
+  showScheduledOption.checked = appOptions.showScheduled;
+  showOnHoldOption.checked = appOptions.showOnHold;
   compactModeOption.checked = appOptions.compactMode;
   weekendModeOption.checked = appOptions.tomorrowMode === "weekdays";
   settingsOptions.querySelectorAll("[data-queue-mode]").forEach((button) => {
@@ -2902,6 +3132,7 @@ function renderFooterTray() {
 
   footerTray.hidden = visibleTabs.length === 0;
   document.body.classList.toggle("has-no-pinned-footer", visibleTabs.length === 0);
+  footerTray.querySelector(".footer-tabs")?.setAttribute("data-visible-count", String(visibleTabs.length));
 
   footerTabs.forEach((tab) => {
     const tabName = tab.dataset.footerTab;
@@ -2951,9 +3182,10 @@ function syncFooterTrayState() {
 
 function getVisibleFooterTabs() {
   return [
-    ...(appOptions.showProjects ? ["projects"] : []),
-    "scheduled",
-    ...(appOptions.showTomorrow ? ["tomorrow"] : [])
+    ...(appOptions.showTomorrow ? ["tomorrow"] : []),
+    ...(appOptions.showScheduled ? ["scheduled"] : []),
+    ...(appOptions.showOnHold ? ["on-hold"] : []),
+    ...(appOptions.showProjects ? ["projects"] : [])
   ];
 }
 
@@ -3019,6 +3251,31 @@ function focusScheduledInput() {
       // Some mobile browsers can reject selection updates during focus transitions.
     }
   });
+}
+
+function renderOnHoldQueue(options = {}) {
+  const { scrollToBottom = false } = options;
+  const visibleOnHoldItems = getVisibleOnHoldQueue();
+  onHoldCount.textContent = String(visibleOnHoldItems.length);
+
+  if (visibleOnHoldItems.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "on-hold-empty";
+    empty.textContent = "No tasks on hold.";
+    onHoldList.replaceChildren(empty);
+    updateTomorrowFooterSpace();
+    return;
+  }
+
+  onHoldList.replaceChildren(...visibleOnHoldItems.map(createOnHoldQueueElement));
+  updateTomorrowFooterSpace();
+  if (scrollToBottom) {
+    scrollOnHoldQueueToBottom();
+  }
+}
+
+function getVisibleOnHoldQueue() {
+  return normalizeOnHoldQueue(onHoldQueue).filter((item) => !isDeletedOnHoldQueueItem(item));
 }
 
 function ensureScheduledDateValue() {
@@ -3111,6 +3368,12 @@ function scrollTomorrowQueueToBottom() {
   });
 }
 
+function scrollOnHoldQueueToBottom() {
+  window.requestAnimationFrame(() => {
+    onHoldList.scrollTop = onHoldList.scrollHeight;
+  });
+}
+
 function createTomorrowQueueElement(entry) {
   const item = document.createElement("li");
   item.className = "tomorrow-item";
@@ -3152,6 +3415,44 @@ function createScheduledQueueElement(entry) {
   button.textContent = "Remove";
 
   item.append(title, date, button);
+  return item;
+}
+
+function createOnHoldQueueElement(entry) {
+  const item = document.createElement("li");
+  item.className = "on-hold-item";
+  item.dataset.onHoldId = entry.id;
+
+  const title = document.createElement("p");
+  title.className = "on-hold-title";
+  title.textContent = entry.title;
+
+  const actions = document.createElement("div");
+  actions.className = "on-hold-actions";
+
+  const todayButton = document.createElement("button");
+  todayButton.className = "on-hold-action";
+  todayButton.type = "button";
+  todayButton.dataset.onHoldAction = "today";
+  todayButton.setAttribute("aria-label", `Bump ${entry.title} to Today`);
+  todayButton.textContent = "Today";
+
+  const tomorrowButton = document.createElement("button");
+  tomorrowButton.className = "on-hold-action";
+  tomorrowButton.type = "button";
+  tomorrowButton.dataset.onHoldAction = "tomorrow";
+  tomorrowButton.setAttribute("aria-label", `Bump ${entry.title} to Tomorrow`);
+  tomorrowButton.textContent = "Tomorrow";
+
+  const removeButton = document.createElement("button");
+  removeButton.className = "on-hold-action";
+  removeButton.type = "button";
+  removeButton.dataset.onHoldAction = "delete";
+  removeButton.setAttribute("aria-label", `Remove ${entry.title}`);
+  removeButton.textContent = "Remove";
+
+  actions.append(todayButton, tomorrowButton, removeButton);
+  item.append(title, actions);
   return item;
 }
 
@@ -3978,6 +4279,7 @@ function createTaskMenu(task, list) {
       menu.append(createRepeatPanel(task));
     }
     menu.append(createMenuButton("Bump to Tomorrow", "move-task-tomorrow", `Bump ${task.title} to Tomorrow`));
+    menu.append(createMenuButton("Move to On hold", "move-task-on-hold", `Move ${task.title} to On hold`));
   }
   return menu;
 }
@@ -4394,6 +4696,10 @@ function cloneScheduledQueueItem(item) {
   return item ? normalizeScheduledQueueItem({ ...item }) : null;
 }
 
+function cloneOnHoldQueueItem(item) {
+  return item ? normalizeOnHoldQueueItem({ ...item }) : null;
+}
+
 function insertListAt(list, index) {
   const nextList = cloneList(list);
   const nextLists = ensureTodayList(lists).filter((item) => item.id !== nextList.id);
@@ -4432,6 +4738,15 @@ function insertScheduledQueueItemAt(item, index) {
   scheduledQueue = scheduledQueue.filter((entry) => entry.id !== nextItem.id);
   const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : scheduledQueue.length, scheduledQueue.length));
   scheduledQueue.splice(insertIndex, 0, nextItem);
+}
+
+function insertOnHoldQueueItemAt(item, index) {
+  const nextItem = cloneOnHoldQueueItem(item);
+  if (!nextItem) return;
+
+  onHoldQueue = onHoldQueue.filter((entry) => entry.id !== nextItem.id);
+  const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : onHoldQueue.length, onHoldQueue.length));
+  onHoldQueue.splice(insertIndex, 0, nextItem);
 }
 
 function listToRow(list, position, updatedAt) {
@@ -4611,6 +4926,62 @@ function normalizeScheduledQueue(queue) {
 }
 
 function isDeletedScheduledQueueItem(item) {
+  return Boolean(item?.deleted || item?.deletedAt);
+}
+
+function createOnHoldQueueItem(title, options = {}) {
+  const createdAt = options.createdAt || new Date().toISOString();
+  return {
+    id: options.id || uid(),
+    title,
+    createdAt,
+    updatedAt: options.updatedAt || options.updated_at || createdAt
+  };
+}
+
+function createDeletedOnHoldQueueItem(item, deletedAt = new Date().toISOString()) {
+  return {
+    id: item.id,
+    title: item.title || "",
+    createdAt: item.createdAt || deletedAt,
+    updatedAt: deletedAt,
+    deleted: true,
+    deletedAt
+  };
+}
+
+function normalizeOnHoldQueueItem(item) {
+  if (typeof item === "string") {
+    const title = item.trim();
+    return title ? createOnHoldQueueItem(title) : null;
+  }
+
+  if (isDeletedOnHoldQueueItem(item)) {
+    const id = typeof item.id === "string" && item.id ? item.id : "";
+    if (!id) return null;
+    const deletedAt = item.deletedAt || item.updatedAt || item.updated_at || item.createdAt || new Date().toISOString();
+    return createDeletedOnHoldQueueItem({
+      id,
+      title: item.title || "",
+      createdAt: item.createdAt
+    }, deletedAt);
+  }
+
+  const title = item?.title?.trim();
+  if (!title) return null;
+
+  return createOnHoldQueueItem(title, {
+    id: item.id,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.updated_at
+  });
+}
+
+function normalizeOnHoldQueue(queue) {
+  return Array.isArray(queue) ? queue.map(normalizeOnHoldQueueItem).filter(Boolean) : [];
+}
+
+function isDeletedOnHoldQueueItem(item) {
   return Boolean(item?.deleted || item?.deletedAt);
 }
 
@@ -4892,8 +5263,8 @@ function markTaskOrderUpdated(list) {
   list?.tasks.forEach((task) => markTaskUpdated(task, updatedAt));
 }
 
-async function getMergedPrivateStateForPush(privateLists, queue, scheduled) {
-  const localState = rollDueQueuesIntoPrivateState(privateLists, queue, scheduled);
+async function getMergedPrivateStateForPush(privateLists, queue, scheduled, onHold) {
+  const localState = rollDueQueuesIntoPrivateState(privateLists, queue, scheduled, onHold);
   const remoteResult = await fetchPrivateDocument();
   if (remoteResult.error) {
     return { ...localState, error: remoteResult.error };
@@ -4908,22 +5279,24 @@ async function getMergedPrivateStateForPush(privateLists, queue, scheduled) {
     : [];
   const remoteQueue = normalizeTomorrowQueue(remoteResult.data.tomorrow_queue);
   const remoteScheduledQueue = normalizeScheduledQueue(remoteResult.data.scheduled_queue);
+  const remoteOnHoldQueue = normalizeOnHoldQueue(remoteResult.data.on_hold_queue);
 
   return {
-    ...mergePrivateState(localState.lists, localState.tomorrowQueue, localState.scheduledQueue, remoteLists, remoteQueue, remoteScheduledQueue),
+    ...mergePrivateState(localState.lists, localState.tomorrowQueue, localState.scheduledQueue, localState.onHoldQueue, remoteLists, remoteQueue, remoteScheduledQueue, remoteOnHoldQueue),
     error: null
   };
 }
 
 // Multiple installed app instances can wake up with stale private state, so private sync preserves items from both sides.
-function mergePrivateState(localPrivateLists = [], localQueue = [], localScheduledQueue = [], remotePrivateLists = [], remoteQueue = [], remoteScheduledQueue = []) {
+function mergePrivateState(localPrivateLists = [], localQueue = [], localScheduledQueue = [], localOnHoldQueue = [], remotePrivateLists = [], remoteQueue = [], remoteScheduledQueue = [], remoteOnHoldQueue = []) {
   const localToday = ensureTodayList(localPrivateLists.map(normalizeList)).find(isTodayList);
   const remoteToday = ensureTodayList(remotePrivateLists.map(normalizeList)).find(isTodayList);
   const mergedToday = mergeTodayLists(localToday, remoteToday);
   const mergedQueue = mergeTomorrowQueues(localQueue, remoteQueue);
   const mergedScheduledQueue = mergeScheduledQueues(localScheduledQueue, remoteScheduledQueue);
+  const mergedOnHoldQueue = mergeOnHoldQueues(localOnHoldQueue, remoteOnHoldQueue);
 
-  return rollDueQueuesIntoPrivateState([mergedToday], mergedQueue, mergedScheduledQueue);
+  return rollDueQueuesIntoPrivateState([mergedToday], mergedQueue, mergedScheduledQueue, mergedOnHoldQueue);
 }
 
 function mergeTodayLists(localToday, remoteToday) {
@@ -5050,7 +5423,39 @@ function mergeScheduledQueueItem(existing, incoming) {
   });
 }
 
-function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled = []) {
+function mergeOnHoldQueues(primaryQueue = [], secondaryQueue = []) {
+  const queueOrder = [];
+  const queueById = new Map();
+
+  [...normalizeOnHoldQueue(primaryQueue), ...normalizeOnHoldQueue(secondaryQueue)].forEach((item) => {
+    if (!queueById.has(item.id)) {
+      queueOrder.push(item.id);
+      queueById.set(item.id, item);
+      return;
+    }
+
+    queueById.set(item.id, mergeOnHoldQueueItem(queueById.get(item.id), item));
+  });
+
+  return queueOrder.map((itemId) => queueById.get(itemId)).filter(Boolean);
+}
+
+function mergeOnHoldQueueItem(existing, incoming) {
+  if (isDeletedOnHoldQueueItem(existing) || isDeletedOnHoldQueueItem(incoming)) {
+    return isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  }
+
+  const winner = isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  const fallback = winner === incoming ? existing : incoming;
+
+  return createOnHoldQueueItem(winner.title || fallback.title, {
+    id: existing.id || incoming.id,
+    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt,
+    updatedAt: getLatestDateValue(existing.updatedAt, incoming.updatedAt) || winner.updatedAt || fallback.updatedAt
+  });
+}
+
+function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled = [], onHold = []) {
   const todayKey = getDateKey();
   const nextLists = ensureTodayList(privateLists.map(normalizeList)).filter(isTodayList);
   const todayList = nextLists.find(isTodayList);
@@ -5108,7 +5513,8 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
   return {
     lists: nextLists,
     tomorrowQueue: remainingQueue,
-    scheduledQueue: remainingScheduledQueue
+    scheduledQueue: remainingScheduledQueue,
+    onHoldQueue: normalizeOnHoldQueue(onHold)
   };
 }
 
@@ -5120,10 +5526,11 @@ function getRolledTomorrowTaskId(item) {
   return `tomorrow-${item.id}`;
 }
 
-function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], remoteScheduledQueue = [], nextLists = [], nextQueue = [], nextScheduledQueue = []) {
+function hasPrivateStateChanged(remoteLists = [], remoteQueue = [], remoteScheduledQueue = [], remoteOnHoldQueue = [], nextLists = [], nextQueue = [], nextScheduledQueue = [], nextOnHoldQueue = []) {
   return JSON.stringify(remoteLists) !== JSON.stringify(nextLists)
     || JSON.stringify(remoteQueue) !== JSON.stringify(nextQueue)
-    || JSON.stringify(remoteScheduledQueue) !== JSON.stringify(nextScheduledQueue);
+    || JSON.stringify(remoteScheduledQueue) !== JSON.stringify(nextScheduledQueue)
+    || JSON.stringify(remoteOnHoldQueue) !== JSON.stringify(nextOnHoldQueue);
 }
 
 function mergeArchiveText(...texts) {
