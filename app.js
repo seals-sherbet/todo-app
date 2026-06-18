@@ -14,6 +14,7 @@ const completedArchiveKey = "tasks.completedArchive.v1";
 const sharedTaskDeletionKey = "tasks.sharedTaskDeletions.v1";
 const todayDateKeyStorageKey = "tasks.todayDateKey.v1";
 const syncLastSuccessKey = "tasks.lastSyncSuccess.v1";
+const sandboxDateKeyStorageKey = "tasks.sandboxDateKey.v1";
 const deletedTaskTitle = "__tasks_deleted__";
 const privateDocumentFields = "lists,tomorrow_queue,scheduled_queue,on_hold_queue,updated_at,device_id";
 const legacyPrivateDocumentFields = "lists,tomorrow_queue,scheduled_queue,updated_at,device_id";
@@ -31,7 +32,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.11";
+const appVersion = "0.2.17";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -61,6 +62,8 @@ const syncButton = document.querySelector("#syncButton");
 const refreshSyncButton = document.querySelector("#refreshSyncButton");
 const syncStatus = document.querySelector("#syncStatus");
 const syncErrorButton = document.querySelector("#syncErrorButton");
+const simulateTomorrowButton = document.querySelector("#simulateTomorrowButton");
+const resetSandboxDateButton = document.querySelector("#resetSandboxDateButton");
 const syncAuthDialog = document.querySelector("#syncAuthDialog");
 const syncAuthClose = document.querySelector("#syncAuthClose");
 const syncAuthTitle = document.querySelector("#syncAuthTitle");
@@ -174,7 +177,9 @@ const monthlyRepeatPatternOptions = monthlyRepeatDayOptions.flatMap((dayOption) 
 );
 const supportedMonthlyRepeatPatternOptions = monthlyRepeatPatternOptions;
 const monthlyRepeatPatternValues = new Set(supportedMonthlyRepeatPatternOptions.map((option) => option.value));
+const sandboxDateEnabled = isSandboxDateEnabled();
 
+let sandboxTodayDateKey = getStoredSandboxDateKey();
 let completedArchiveText = loadCompletedArchiveText();
 let deletedSharedTasks = loadDeletedSharedTasks();
 let listCollapsePrefs = loadListCollapsePrefs();
@@ -699,7 +704,7 @@ async function handleTaskBoardClick(event) {
     persistAndRender({ sharedListIds: [list.id] });
     scrollTomorrowQueueToBottom();
     showUndo(`Bumped "${movedTask.title}" to Tomorrow.`, () => {
-      tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== queueItem.id);
+      deleteTomorrowQueueItem(queueItem.id, queueItem);
       forgetTaskDeletion(findList(list.id), movedTask.id);
       markTaskUpdated(movedTask);
       insertTaskAt(findList(list.id), movedTask, movedTaskIndex);
@@ -727,7 +732,7 @@ async function handleTaskBoardClick(event) {
     persistAndRender({ syncShared: false });
     renderOnHoldQueue({ scrollToBottom: true });
     showUndo(`Moved "${movedTask.title}" to On hold.`, () => {
-      onHoldQueue = onHoldQueue.filter((entry) => entry.id !== queueItem.id);
+      deleteOnHoldQueueItem(queueItem.id, queueItem);
       forgetTaskDeletion(findList(list.id), movedTask.id);
       markTaskUpdated(movedTask);
       insertTaskAt(findList(list.id), movedTask, movedTaskIndex);
@@ -863,10 +868,14 @@ scheduledForm?.addEventListener("submit", (event) => {
   setScheduledDateValue(getTomorrowDateKey(), { renderPicker: false });
   persistScheduledQueue();
   const rolledToday = rollScheduledQueueIntoToday();
+  const rolledTomorrow = rollScheduledQueueIntoTomorrow();
   if (rolledToday) {
     render();
   } else {
     renderScheduledQueue({ scrollToBottom: true });
+  }
+  if (rolledTomorrow) {
+    renderTomorrowQueue({ scrollToBottom: activeFooterTab === "tomorrow" });
   }
   focusScheduledInput();
 });
@@ -1004,7 +1013,7 @@ onHoldList?.addEventListener("click", (event) => {
     renderOnHoldQueue();
     renderTomorrowQueue({ scrollToBottom: activeFooterTab === "tomorrow" });
     showUndo(`Bumped "${removedItem.title}" to Tomorrow.`, () => {
-      tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== queueItem.id);
+      deleteTomorrowQueueItem(queueItem.id, queueItem);
       insertOnHoldQueueItemAt({
         ...removedItem,
         deleted: false,
@@ -1063,13 +1072,17 @@ tomorrowList.addEventListener("click", (event) => {
 
   if (button.dataset.tomorrowAction === "delete") {
     const removedIndex = tomorrowQueue.findIndex((entry) => entry.id === item.dataset.tomorrowId);
-    const removedItem = cloneTomorrowQueueItem(tomorrowQueue[removedIndex]);
-    tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== item.dataset.tomorrowId);
+    const removedItem = deleteTomorrowQueueItem(item.dataset.tomorrowId);
     persistTomorrowQueue();
     renderTomorrowQueue();
     if (removedItem) {
       showUndo(`Removed "${removedItem.title}" from Tomorrow.`, () => {
-        insertTomorrowQueueItemAt(removedItem, removedIndex);
+        insertTomorrowQueueItemAt({
+          ...removedItem,
+          deleted: false,
+          deletedAt: "",
+          updatedAt: new Date().toISOString()
+        }, removedIndex);
         persistTomorrowQueue();
         renderTomorrowQueue();
       });
@@ -1168,6 +1181,16 @@ settingsOptions.addEventListener("click", (event) => {
 
   setAccountTomorrowMode(modeButton.dataset.queueMode);
   render();
+});
+
+simulateTomorrowButton?.addEventListener("click", () => {
+  if (!sandboxDateEnabled) return;
+  setSandboxDateKey(getTomorrowDateKey());
+});
+
+resetSandboxDateButton?.addEventListener("click", () => {
+  if (!sandboxDateEnabled) return;
+  setSandboxDateKey(getSystemDateKey());
 });
 
 updateAppButton.addEventListener("click", async () => {
@@ -2984,7 +3007,7 @@ function render() {
 
   todayBoard.replaceChildren(todayList ? createListElement(todayList) : []);
   listBoard.replaceChildren(...visibleLists.map(createListElement));
-  projectBoard.replaceChildren(...visibleProjectLists.map(createListElement));
+  projectBoard.replaceChildren(...visibleProjectLists.map(createProjectFooterElement));
   renderFooterTray();
   updateTomorrowFooterSpace();
 }
@@ -3027,8 +3050,25 @@ function renderSettingsMenu() {
   viewArchiveButton.disabled = !hasArchive;
   copyArchiveButton.disabled = !hasArchive;
   downloadArchiveButton.disabled = !hasArchive;
+  if (simulateTomorrowButton) simulateTomorrowButton.hidden = !sandboxDateEnabled;
+  if (resetSandboxDateButton) {
+    resetSandboxDateButton.hidden = !sandboxDateEnabled;
+    resetSandboxDateButton.disabled = !sandboxDateEnabled || sandboxTodayDateKey === getSystemDateKey();
+  }
   if (appVersionLabel) appVersionLabel.textContent = appVersion;
   if (lastSyncedAtLabel) lastSyncedAtLabel.textContent = formatLastSyncedText();
+}
+
+function setSandboxDateKey(dateKey) {
+  if (!sandboxDateEnabled || !isDateKey(dateKey)) return;
+
+  sandboxTodayDateKey = dateKey;
+  localStorage.setItem(sandboxDateKeyStorageKey, sandboxTodayDateKey);
+  settingsMenuOpen = false;
+  renderSettingsMenu();
+  rollTomorrowQueueIntoToday({ renderAfter: true });
+  scheduleNextRollover();
+  notifyUser(`Sandbox date set to ${formatTodayDate()}.`);
 }
 
 function markSyncSuccess() {
@@ -3192,28 +3232,30 @@ function getVisibleFooterTabs() {
 function renderTomorrowQueue(options = {}) {
   const { scrollToBottom = false } = options;
   const queueLabel = getTomorrowQueueLabel();
+  const visibleTomorrowQueue = getVisibleTomorrowQueue();
 
   tomorrowLabel.textContent = queueLabel;
   tomorrowInput.placeholder = queueLabel === "Tomorrow" ? "Add to tomorrow" : `Add to ${queueLabel}`;
   tomorrowInput.setAttribute("aria-label", tomorrowInput.placeholder);
   tomorrowToggle.setAttribute("aria-expanded", String(!tomorrowCollapsed));
   tomorrowBody.hidden = tomorrowCollapsed;
-  tomorrowCount.textContent = String(tomorrowQueue.length);
+  tomorrowCount.textContent = String(visibleTomorrowQueue.length);
 
-  if (tomorrowQueue.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "tomorrow-empty";
-    empty.textContent = "No tasks queued.";
-    tomorrowList.replaceChildren(empty);
+  if (visibleTomorrowQueue.length === 0) {
+    tomorrowList.replaceChildren(createFooterEmpty("No tasks queued.", "tomorrow-empty"));
     updateTomorrowFooterSpace();
     return;
   }
 
-  tomorrowList.replaceChildren(...tomorrowQueue.map(createTomorrowQueueElement));
+  tomorrowList.replaceChildren(...visibleTomorrowQueue.map(createTomorrowQueueElement));
   updateTomorrowFooterSpace();
   if (scrollToBottom) {
     scrollTomorrowQueueToBottom();
   }
+}
+
+function getVisibleTomorrowQueue() {
+  return normalizeTomorrowQueue(tomorrowQueue).filter((item) => !isDeletedTomorrowQueueItem(item));
 }
 
 function renderScheduledQueue(options = {}) {
@@ -3223,10 +3265,7 @@ function renderScheduledQueue(options = {}) {
   scheduledCount.textContent = String(visibleScheduledItems.length);
 
   if (visibleScheduledItems.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "scheduled-empty";
-    empty.textContent = "No scheduled tasks.";
-    scheduledList.replaceChildren(empty);
+    scheduledList.replaceChildren(createFooterEmpty("No scheduled tasks.", "scheduled-empty"));
     updateTomorrowFooterSpace();
     return;
   }
@@ -3259,10 +3298,7 @@ function renderOnHoldQueue(options = {}) {
   onHoldCount.textContent = String(visibleOnHoldItems.length);
 
   if (visibleOnHoldItems.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "on-hold-empty";
-    empty.textContent = "No tasks on hold.";
-    onHoldList.replaceChildren(empty);
+    onHoldList.replaceChildren(createFooterEmpty("No tasks on hold.", "on-hold-empty"));
     updateTomorrowFooterSpace();
     return;
   }
@@ -3379,9 +3415,17 @@ function createTomorrowQueueElement(entry) {
   item.className = "tomorrow-item";
   item.dataset.tomorrowId = entry.id;
 
+  const main = document.createElement("div");
+  main.className = "tomorrow-main";
+
   const title = document.createElement("p");
   title.className = "tomorrow-title";
   title.textContent = entry.title;
+  main.append(title);
+
+  if (isScheduledTomorrowQueueItem(entry)) {
+    main.append(createScheduledBadge("tomorrow-badge"));
+  }
 
   const button = document.createElement("button");
   button.className = "tomorrow-remove";
@@ -3390,7 +3434,7 @@ function createTomorrowQueueElement(entry) {
   button.setAttribute("aria-label", `Remove ${entry.title}`);
   button.textContent = "Remove";
 
-  item.append(title, button);
+  item.append(main, button);
   return item;
 }
 
@@ -3454,6 +3498,13 @@ function createOnHoldQueueElement(entry) {
   actions.append(todayButton, tomorrowButton, removeButton);
   item.append(title, actions);
   return item;
+}
+
+function createFooterEmpty(text, className = "") {
+  const empty = document.createElement("li");
+  empty.className = `footer-empty${className ? ` ${className}` : ""}`;
+  empty.textContent = text;
+  return empty;
 }
 
 function getSortedScheduledQueue() {
@@ -3672,6 +3723,28 @@ function createListElement(list) {
   return item;
 }
 
+function createProjectFooterElement(list) {
+  const item = document.createElement("li");
+  const openTasks = list.tasks.filter((task) => !task.completed);
+
+  item.className = "standing-list is-project-pinned footer-project-list";
+  if (openMenu?.listId === list.id) {
+    item.classList.add("has-open-menu");
+  }
+  item.dataset.listId = list.id;
+
+  const rows = document.createElement("ul");
+  rows.className = "footer-project-rows";
+  rows.replaceChildren(...(
+    openTasks.length > 0
+      ? openTasks.map((task) => createTaskElement(task, list))
+      : [createFooterEmpty("No open projects.", "project-empty")]
+  ));
+
+  item.append(rows, createTaskForm(list));
+  return item;
+}
+
 function createTaskForm(list) {
   if (activeTaskFormListId !== list.id) {
     return createTaskFormLauncher(list);
@@ -3803,6 +3876,9 @@ function createTaskElement(task, list, variant = "") {
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
+  if (isScheduledTask(task)) {
+    meta.append(createScheduledBadge("pill scheduled"));
+  }
   if (list.showDetails) {
     meta.append(createPriorityPill(task.priority));
 
@@ -3901,7 +3977,7 @@ function setTaskRepeat(task, mode, options = {}) {
   }
 
   const todayKey = getDateKey();
-  const dayOfMonth = options.dayOfMonth || new Date().getDate();
+  const dayOfMonth = options.dayOfMonth || getSandboxDate().getDate();
   const monthlyPattern = mode === monthlyPatternRepeatMode
     ? normalizeMonthlyRepeatPattern(options.monthlyPattern) || monthlyRepeatPatternOptions[0].value
     : "";
@@ -4324,6 +4400,13 @@ function createRepeatBadge(repeat) {
   return badge;
 }
 
+function createScheduledBadge(className = "pill scheduled") {
+  const badge = document.createElement("span");
+  badge.className = className;
+  badge.textContent = "Scheduled";
+  return badge;
+}
+
 function formatRepeatBadgeLabel(repeat) {
   if (!repeat?.enabled) return "";
   if (repeat.mode === "monthly-date") return `Monthly ${formatOrdinal(repeat.dayOfMonth || 1)}`;
@@ -4569,8 +4652,13 @@ function createTask(title, options = {}) {
   const createdAt = options.createdAt || new Date().toISOString();
   const updatedAt = options.updatedAt || options.updated_at || createdAt;
   const priorities = ["normal", "high", "low"];
+  const source = normalizeItemSource(options.source || options.origin);
+  const sourceId = options.sourceId || options.source_id || options.scheduledId || options.scheduled_id || "";
+  const scheduledDate = isDateKey(options.scheduledDate || options.scheduled_date)
+    ? options.scheduledDate || options.scheduled_date
+    : "";
 
-  return {
+  const task = {
     id: options.id || uid(),
     title,
     due: options.due || "",
@@ -4582,6 +4670,34 @@ function createTask(title, options = {}) {
     createdAt,
     updatedAt
   };
+
+  if (source) {
+    task.source = source;
+    task.sourceId = sourceId;
+    task.scheduledDate = scheduledDate;
+  }
+
+  return task;
+}
+
+function normalizeItemSource(source) {
+  return source === "scheduled" ? "scheduled" : "";
+}
+
+function isScheduledTask(task) {
+  return normalizeItemSource(task?.source || task?.origin) === "scheduled";
+}
+
+function clearScheduledTaskMetadata(task) {
+  if (!task) return;
+  delete task.source;
+  delete task.origin;
+  delete task.sourceId;
+  delete task.source_id;
+  delete task.scheduledId;
+  delete task.scheduled_id;
+  delete task.scheduledDate;
+  delete task.scheduled_date;
 }
 
 function createList(name, collapsed = false, tasks = [], options = {}) {
@@ -4731,6 +4847,16 @@ function insertTomorrowQueueItemAt(item, index) {
   tomorrowQueue.splice(insertIndex, 0, nextItem);
 }
 
+function deleteTomorrowQueueItem(itemId, fallbackItem = null) {
+  const existingItem = tomorrowQueue.find((entry) => entry.id === itemId && !isDeletedTomorrowQueueItem(entry));
+  const removedItem = cloneTomorrowQueueItem(existingItem || fallbackItem);
+  tomorrowQueue = tomorrowQueue.filter((entry) => entry.id !== itemId);
+  if (removedItem) {
+    tomorrowQueue.push(createDeletedTomorrowQueueItem(removedItem));
+  }
+  return removedItem;
+}
+
 function insertScheduledQueueItemAt(item, index) {
   const nextItem = cloneScheduledQueueItem(item);
   if (!nextItem) return;
@@ -4747,6 +4873,16 @@ function insertOnHoldQueueItemAt(item, index) {
   onHoldQueue = onHoldQueue.filter((entry) => entry.id !== nextItem.id);
   const insertIndex = Math.max(0, Math.min(Number.isInteger(index) ? index : onHoldQueue.length, onHoldQueue.length));
   onHoldQueue.splice(insertIndex, 0, nextItem);
+}
+
+function deleteOnHoldQueueItem(itemId, fallbackItem = null) {
+  const existingItem = onHoldQueue.find((entry) => entry.id === itemId && !isDeletedOnHoldQueueItem(entry));
+  const removedItem = cloneOnHoldQueueItem(existingItem || fallbackItem);
+  onHoldQueue = onHoldQueue.filter((entry) => entry.id !== itemId);
+  if (removedItem) {
+    onHoldQueue.push(createDeletedOnHoldQueueItem(removedItem));
+  }
+  return removedItem;
 }
 
 function listToRow(list, position, updatedAt) {
@@ -4841,12 +4977,54 @@ function rowToTask(row) {
 }
 
 function createTomorrowQueueItem(title, options = {}) {
-  return {
+  const createdAt = options.createdAt || new Date().toISOString();
+  const source = normalizeItemSource(options.source || options.origin);
+  const sourceId = options.sourceId || options.source_id || options.scheduledId || options.scheduled_id || "";
+  const scheduledDate = isDateKey(options.scheduledDate || options.scheduled_date)
+    ? options.scheduledDate || options.scheduled_date
+    : "";
+  const item = {
     id: options.id || uid(),
     title,
     targetDate: options.targetDate || getNextQueueTargetDateKey(),
-    createdAt: options.createdAt || new Date().toISOString()
+    createdAt,
+    updatedAt: options.updatedAt || options.updated_at || createdAt
   };
+
+  if (source) {
+    item.source = source;
+    item.sourceId = sourceId;
+    item.scheduledDate = scheduledDate;
+  }
+
+  return item;
+}
+
+function createDeletedTomorrowQueueItem(item, deletedAt = new Date().toISOString()) {
+  const source = normalizeItemSource(item.source || item.origin);
+  const sourceId = item.sourceId || item.source_id || item.scheduledId || item.scheduled_id || "";
+  const scheduledDate = isDateKey(item.scheduledDate || item.scheduled_date)
+    ? item.scheduledDate || item.scheduled_date
+    : "";
+  const deletedItem = {
+    id: item.id,
+    title: item.title || "",
+    targetDate: isDateKey(item.targetDate)
+      ? item.targetDate
+      : getNextQueueTargetDateKey(new Date(item.createdAt || deletedAt)),
+    createdAt: item.createdAt || deletedAt,
+    updatedAt: deletedAt,
+    deleted: true,
+    deletedAt
+  };
+
+  if (source) {
+    deletedItem.source = source;
+    deletedItem.sourceId = sourceId;
+    deletedItem.scheduledDate = scheduledDate;
+  }
+
+  return deletedItem;
 }
 
 function normalizeTomorrowQueueItem(item) {
@@ -4855,18 +5033,45 @@ function normalizeTomorrowQueueItem(item) {
     return title ? createTomorrowQueueItem(title) : null;
   }
 
+  if (isDeletedTomorrowQueueItem(item)) {
+    const id = typeof item.id === "string" && item.id ? item.id : "";
+    if (!id) return null;
+    const deletedAt = item.deletedAt || item.updatedAt || item.updated_at || item.createdAt || new Date().toISOString();
+    return createDeletedTomorrowQueueItem({
+      id,
+      title: item.title || "",
+      targetDate: item.targetDate,
+      createdAt: item.createdAt,
+      source: item.source || item.origin,
+      sourceId: item.sourceId || item.source_id || item.scheduledId || item.scheduled_id,
+      scheduledDate: item.scheduledDate || item.scheduled_date
+    }, deletedAt);
+  }
+
   const title = item?.title?.trim();
   if (!title) return null;
 
   return createTomorrowQueueItem(title, {
     id: item.id,
     targetDate: item.targetDate || getNextQueueTargetDateKey(new Date(item.createdAt || Date.now())),
-    createdAt: item.createdAt
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt || item.updated_at,
+    source: item.source || item.origin,
+    sourceId: item.sourceId || item.source_id || item.scheduledId || item.scheduled_id,
+    scheduledDate: item.scheduledDate || item.scheduled_date
   });
 }
 
 function normalizeTomorrowQueue(queue) {
   return Array.isArray(queue) ? queue.map(normalizeTomorrowQueueItem).filter(Boolean) : [];
+}
+
+function isDeletedTomorrowQueueItem(item) {
+  return Boolean(item?.deleted || item?.deletedAt);
+}
+
+function isScheduledTomorrowQueueItem(item) {
+  return normalizeItemSource(item?.source || item?.origin) === "scheduled";
 }
 
 function createScheduledQueueItem(title, options = {}) {
@@ -5383,10 +5588,21 @@ function mergeTomorrowQueues(primaryQueue = [], secondaryQueue = []) {
 }
 
 function mergeTomorrowQueueItem(existing, incoming) {
-  return createTomorrowQueueItem(existing.title || incoming.title, {
+  if (isDeletedTomorrowQueueItem(existing) || isDeletedTomorrowQueueItem(incoming)) {
+    return isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  }
+
+  const winner = isTimestampNewer(getItemUpdatedAt(incoming), getItemUpdatedAt(existing)) ? incoming : existing;
+  const fallback = winner === incoming ? existing : incoming;
+
+  return createTomorrowQueueItem(winner.title || fallback.title, {
     id: existing.id || incoming.id,
-    targetDate: getEarliestDateKey(existing.targetDate, incoming.targetDate) || existing.targetDate || incoming.targetDate,
-    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt
+    targetDate: winner.targetDate || fallback.targetDate,
+    createdAt: getEarliestDateValue(existing.createdAt, incoming.createdAt) || existing.createdAt || incoming.createdAt,
+    updatedAt: getLatestDateValue(existing.updatedAt, incoming.updatedAt) || winner.updatedAt || fallback.updatedAt,
+    source: winner.source || fallback.source,
+    sourceId: winner.sourceId || fallback.sourceId,
+    scheduledDate: winner.scheduledDate || fallback.scheduledDate
   });
 }
 
@@ -5455,16 +5671,46 @@ function mergeOnHoldQueueItem(existing, incoming) {
   });
 }
 
+function createTomorrowQueueItemFromScheduled(item, options = {}) {
+  return createTomorrowQueueItem(item.title, {
+    id: getScheduledTomorrowQueueItemId(item),
+    targetDate: item.targetDate,
+    createdAt: item.createdAt,
+    updatedAt: options.updatedAt || item.updatedAt || item.updated_at || item.createdAt,
+    source: "scheduled",
+    sourceId: item.id,
+    scheduledDate: item.targetDate
+  });
+}
+
+function getScheduledTomorrowQueueItemId(item) {
+  return `scheduled-${item.id}`;
+}
+
+function getScheduledTaskMetadata(item) {
+  return {
+    source: "scheduled",
+    sourceId: item.sourceId || item.source_id || item.id,
+    scheduledDate: item.scheduledDate || item.scheduled_date || item.targetDate || ""
+  };
+}
+
 function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled = [], onHold = []) {
   const todayKey = getDateKey();
+  const tomorrowTargetKey = getNextQueueTargetDateKey();
   const nextLists = ensureTodayList(privateLists.map(normalizeList)).filter(isTodayList);
   const todayList = nextLists.find(isTodayList);
   todayList.tasks = filterTasksDeletedByTombstones(todayList.tasks, todayList.deletedTaskTombstones);
-  const remainingQueue = [];
+  let remainingQueue = [];
   const remainingScheduledQueue = [];
   const canRollToday = shouldRollTomorrowQueueToday();
 
   normalizeTomorrowQueue(queue).forEach((item) => {
+    if (isDeletedTomorrowQueueItem(item)) {
+      remainingQueue.push(item);
+      return;
+    }
+
     if (!canRollToday || item.targetDate > todayKey) {
       remainingQueue.push(item);
       return;
@@ -5477,7 +5723,8 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
     if (!todayList.tasks.some((task) => task.id === taskId)) {
       todayList.tasks.push(createTask(item.title, {
         id: taskId,
-        createdAt: item.createdAt
+        createdAt: item.createdAt,
+        ...(isScheduledTomorrowQueueItem(item) ? getScheduledTaskMetadata(item) : {})
       }));
     }
   });
@@ -5489,12 +5736,20 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
       return;
     }
 
+    if (item.targetDate <= todayKey) {
+      dueScheduledItems.push(item);
+      return;
+    }
+
+    if (item.targetDate <= tomorrowTargetKey) {
+      remainingQueue = mergeTomorrowQueues(remainingQueue, [createTomorrowQueueItemFromScheduled(item)]);
+      return;
+    }
+
     if (item.targetDate > todayKey) {
       remainingScheduledQueue.push(item);
       return;
     }
-
-    dueScheduledItems.push(item);
   });
 
   dueScheduledItems.slice().reverse().forEach((item) => {
@@ -5505,7 +5760,8 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
     if (!todayList.tasks.some((task) => task.id === taskId)) {
       todayList.tasks.unshift(createTask(item.title, {
         id: taskId,
-        createdAt: item.createdAt
+        createdAt: item.createdAt,
+        ...getScheduledTaskMetadata(item)
       }));
     }
   });
@@ -5523,6 +5779,9 @@ function rollDueQueueIntoPrivateState(privateLists = [], queue = []) {
 }
 
 function getRolledTomorrowTaskId(item) {
+  if (isScheduledTomorrowQueueItem(item)) {
+    return getScheduledTaskId({ id: item.sourceId || item.source_id || String(item.id || "").replace(/^scheduled-/, "") });
+  }
   return `tomorrow-${item.id}`;
 }
 
@@ -6049,6 +6308,9 @@ function rollRepeatingTasksIntoToday(todayList, todayKey) {
       task.completed = false;
       task.completedAt = "";
       delete task.previousCompletedAt;
+      if (isScheduledTask(task)) {
+        clearScheduledTaskMetadata(task);
+      }
       reopenedTaskIds.push(task.id);
     }
 
@@ -6080,7 +6342,8 @@ function rollScheduledQueueIntoToday(options = {}) {
 
     todayList.tasks.unshift(createTask(item.title, {
       id: taskId,
-      createdAt: item.createdAt
+      createdAt: item.createdAt,
+      ...getScheduledTaskMetadata(item)
     }));
   });
 
@@ -6088,6 +6351,29 @@ function rollScheduledQueueIntoToday(options = {}) {
   scheduledQueue = scheduledQueue.filter((item) => !dueIds.has(item.id));
   persistLists({ syncShared: false });
   persistScheduledQueue();
+
+  if (options.renderAfter) {
+    render();
+  }
+  return true;
+}
+
+function rollScheduledQueueIntoTomorrow(options = {}) {
+  const todayKey = getDateKey();
+  const tomorrowTargetKey = getNextQueueTargetDateKey();
+  const scheduledItems = getSortedScheduledQueue().filter((item) => item.targetDate > todayKey && item.targetDate <= tomorrowTargetKey);
+  if (scheduledItems.length === 0) return false;
+
+  const movedIds = new Set();
+  const movedAt = new Date().toISOString();
+  scheduledItems.forEach((item) => {
+    tomorrowQueue = mergeTomorrowQueues(tomorrowQueue, [createTomorrowQueueItemFromScheduled(item, { updatedAt: movedAt })]);
+    movedIds.add(item.id);
+  });
+
+  scheduledQueue = scheduledQueue.filter((item) => isDeletedScheduledQueueItem(item) || !movedIds.has(item.id));
+  persistScheduledQueue();
+  persistTomorrowQueue();
 
   if (options.renderAfter) {
     render();
@@ -6130,15 +6416,16 @@ function rollTomorrowQueueIntoToday(options = {}) {
   const todayList = lists.find(isTodayList);
   const repeatingChanged = todayList ? rollRepeatingTasksIntoToday(todayList, todayKey) : false;
   const scheduledChanged = rollScheduledQueueIntoToday();
+  const scheduledToTomorrowChanged = rollScheduledQueueIntoTomorrow();
 
   const dueItems = shouldRollTomorrowQueueToday()
-    ? tomorrowQueue.filter((item) => item.targetDate <= todayKey)
+    ? normalizeTomorrowQueue(tomorrowQueue).filter((item) => !isDeletedTomorrowQueueItem(item) && item.targetDate <= todayKey)
     : [];
   if (dueItems.length === 0) {
     if (dayChanged || repeatingChanged || scheduledChanged) {
       persistLists({ syncShared: false });
     }
-    if (options.renderAfter && (dateChanged || dayChanged || repeatingChanged || scheduledChanged)) render();
+    if (options.renderAfter && (dateChanged || dayChanged || repeatingChanged || scheduledChanged || scheduledToTomorrowChanged)) render();
     return;
   }
 
@@ -6154,10 +6441,11 @@ function rollTomorrowQueueIntoToday(options = {}) {
 
     todayList.tasks.push(createTask(item.title, {
       id: taskId,
-      createdAt: item.createdAt
+      createdAt: item.createdAt,
+      ...(isScheduledTomorrowQueueItem(item) ? getScheduledTaskMetadata(item) : {})
     }));
   });
-  tomorrowQueue = tomorrowQueue.filter((item) => item.targetDate > todayKey);
+  tomorrowQueue = normalizeTomorrowQueue(tomorrowQueue).filter((item) => isDeletedTomorrowQueueItem(item) || item.targetDate > todayKey);
   persistLists({ syncShared: false });
   persistTomorrowQueue();
 
@@ -6373,7 +6661,7 @@ function formatTodayDate() {
     weekday: "long",
     month: "long",
     day: "numeric"
-  }).format(new Date());
+  }).format(getSandboxDate());
 }
 
 function formatArchiveDate(dateKey) {
@@ -6398,7 +6686,22 @@ function getArchiveEntries() {
   return mergeArchiveEntries(getArchiveEntriesFromText(completedArchiveText));
 }
 
-function getDateKey(date = new Date()) {
+function getStoredSandboxDateKey() {
+  if (!sandboxDateEnabled) return getSystemDateKey();
+
+  const storedDateKey = localStorage.getItem(sandboxDateKeyStorageKey);
+  return isDateKey(storedDateKey) ? storedDateKey : getSystemDateKey();
+}
+
+function getDateKey(date = getSandboxDate()) {
+  return formatDateKey(date);
+}
+
+function getSystemDateKey(date = new Date()) {
+  return formatDateKey(date);
+}
+
+function formatDateKey(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -6407,14 +6710,14 @@ function getDateKey(date = new Date()) {
 
 function getTomorrowQueueLabel() {
   if (appOptions.tomorrowMode === "weekdays") {
-    const day = new Date().getDay();
+    const day = getSandboxDate().getDay();
     if (day === 5 || day === 6) return "Monday";
   }
 
   return "Tomorrow";
 }
 
-function getNextQueueTargetDateKey(date = new Date()) {
+function getNextQueueTargetDateKey(date = getSandboxDate()) {
   if (appOptions.tomorrowMode !== "weekdays") {
     return getTomorrowDateKey(date);
   }
@@ -6428,11 +6731,11 @@ function getNextQueueTargetDateKey(date = new Date()) {
 }
 
 function shouldRollTomorrowQueueToday() {
-  return appOptions.tomorrowMode !== "weekdays" || isWeekday(new Date());
+  return appOptions.tomorrowMode !== "weekdays" || isWeekday(getSandboxDate());
 }
 
 function isWeekendModeToday() {
-  return appOptions.tomorrowMode === "weekdays" && isWeekend(new Date());
+  return appOptions.tomorrowMode === "weekdays" && isWeekend(getSandboxDate());
 }
 
 function isWeekday(date) {
@@ -6527,10 +6830,21 @@ function getWholeDaysBetween(startDate, endDate) {
   return Math.round((end - start) / 86400000);
 }
 
-function getTomorrowDateKey(date = new Date()) {
+function getTomorrowDateKey(date = getSandboxDate()) {
   const tomorrow = new Date(date);
   tomorrow.setDate(tomorrow.getDate() + 1);
   return getDateKey(tomorrow);
+}
+
+function getSandboxDate() {
+  return parseDateKey(sandboxTodayDateKey) || new Date();
+}
+
+function isSandboxDateEnabled() {
+  const hostname = window.location.hostname;
+  return window.location.protocol === "file:"
+    || hostname === "localhost"
+    || hostname === "127.0.0.1";
 }
 
 function parseDateKey(dateKey) {
