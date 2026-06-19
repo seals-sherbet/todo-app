@@ -5030,7 +5030,9 @@ function createDeletedTomorrowQueueItem(item, deletedAt = new Date().toISOString
 function normalizeTomorrowQueueItem(item) {
   if (typeof item === "string") {
     const title = item.trim();
-    return title ? createTomorrowQueueItem(title) : null;
+    return title ? createTomorrowQueueItem(title, {
+      targetDate: getLegacyTomorrowQueueTargetDateKey()
+    }) : null;
   }
 
   if (isDeletedTomorrowQueueItem(item)) {
@@ -5060,6 +5062,11 @@ function normalizeTomorrowQueueItem(item) {
     sourceId: item.sourceId || item.source_id || item.scheduledId || item.scheduled_id,
     scheduledDate: item.scheduledDate || item.scheduled_date
   });
+}
+
+function getLegacyTomorrowQueueTargetDateKey() {
+  const previousDate = parseDateKey(lastTodayDateKey);
+  return previousDate ? getNextQueueTargetDateKey(previousDate) : getNextQueueTargetDateKey();
 }
 
 function normalizeTomorrowQueue(queue) {
@@ -5717,16 +5724,15 @@ function rollDueQueuesIntoPrivateState(privateLists = [], queue = [], scheduled 
     }
 
     const taskId = getRolledTomorrowTaskId(item);
-    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
-      return;
-    }
-    if (!todayList.tasks.some((task) => task.id === taskId)) {
+    const wasDeletedFromToday = !filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length;
+    if (!wasDeletedFromToday && !todayList.tasks.some((task) => task.id === taskId)) {
       todayList.tasks.push(createTask(item.title, {
         id: taskId,
         createdAt: item.createdAt,
         ...(isScheduledTomorrowQueueItem(item) ? getScheduledTaskMetadata(item) : {})
       }));
     }
+    remainingQueue = mergeTomorrowQueues(remainingQueue, [createDeletedTomorrowQueueItem(item)]);
   });
 
   const dueScheduledItems = [];
@@ -6434,18 +6440,19 @@ function rollTomorrowQueueIntoToday(options = {}) {
 
   dueItems.forEach((item) => {
     const taskId = getRolledTomorrowTaskId(item);
-    if (!filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length) {
-      return;
+    const wasDeletedFromToday = !filterTasksDeletedByTombstones([{ id: taskId, updatedAt: item.createdAt }], todayList.deletedTaskTombstones).length;
+    if (!wasDeletedFromToday && !todayList.tasks.some((task) => task.id === taskId)) {
+      todayList.tasks.push(createTask(item.title, {
+        id: taskId,
+        createdAt: item.createdAt,
+        ...(isScheduledTomorrowQueueItem(item) ? getScheduledTaskMetadata(item) : {})
+      }));
     }
-    if (todayList.tasks.some((task) => task.id === taskId)) return;
-
-    todayList.tasks.push(createTask(item.title, {
-      id: taskId,
-      createdAt: item.createdAt,
-      ...(isScheduledTomorrowQueueItem(item) ? getScheduledTaskMetadata(item) : {})
-    }));
   });
-  tomorrowQueue = normalizeTomorrowQueue(tomorrowQueue).filter((item) => isDeletedTomorrowQueueItem(item) || item.targetDate > todayKey);
+  tomorrowQueue = mergeTomorrowQueues(
+    normalizeTomorrowQueue(tomorrowQueue).filter((item) => isDeletedTomorrowQueueItem(item) || item.targetDate > todayKey),
+    dueItems.map((item) => createDeletedTomorrowQueueItem(item))
+  );
   persistLists({ syncShared: false });
   persistTomorrowQueue();
 
