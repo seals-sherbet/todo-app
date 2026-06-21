@@ -32,7 +32,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.17";
+const appVersion = "0.2.18";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -635,7 +635,7 @@ async function handleTaskBoardClick(event) {
     const previousCompletedAt = task.completedAt;
     const wasPreviousCompleted = wasCompleted && getTaskCompletionDateKey(task) !== getDateKey();
     task.completed = !task.completed;
-    task.completedAt = task.completed ? new Date().toISOString() : "";
+    task.completedAt = task.completed ? getCurrentAppTimestamp() : "";
     if (wasPreviousCompleted && !task.completed) {
       task.previousCompletedAt = previousCompletedAt;
     } else {
@@ -6702,6 +6702,15 @@ function getStoredSandboxDateKey() {
 
 function getDateKey(date = getSandboxDate()) {
   return formatDateKey(date);
+}
+
+function getCurrentAppTimestamp() {
+  const now = new Date();
+  const appDate = parseDateKey(getDateKey());
+  if (!appDate) return now.toISOString();
+
+  appDate.setHours(now.getHours(), now.getMinutes(), now.getSeconds(), now.getMilliseconds());
+  return appDate.toISOString();
 }
 
 function getSystemDateKey(date = new Date()) {
