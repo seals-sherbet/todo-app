@@ -2582,6 +2582,14 @@ button:focus-visible {
   min-width: 0;
 }
 
+.tomorrow-actions {
+  display: inline-flex;
+  min-width: max-content;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+}
+
 .tomorrow-title {
   min-width: 0;
   margin: 0;
@@ -2596,7 +2604,6 @@ button:focus-visible {
   display: inline-flex;
   min-height: 17px;
   align-items: center;
-  margin-top: 4px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--tomorrow-accent) 16%, var(--tomorrow-row));
   color: var(--tomorrow-accent-strong);
@@ -2604,6 +2611,7 @@ button:focus-visible {
   font-size: 0.64rem;
   font-weight: 500;
   line-height: 1;
+  white-space: nowrap;
 }
 
 .tomorrow-remove {
@@ -2615,6 +2623,7 @@ button:focus-visible {
   padding: 0 6px;
   font-size: 0.7rem;
   font-weight: 500;
+  white-space: nowrap;
 }
 
 .tomorrow-remove:hover,

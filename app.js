@@ -32,7 +32,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.18";
+const appVersion = "0.2.19";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -3423,10 +3423,6 @@ function createTomorrowQueueElement(entry) {
   title.textContent = entry.title;
   main.append(title);
 
-  if (isScheduledTomorrowQueueItem(entry)) {
-    main.append(createScheduledBadge("tomorrow-badge"));
-  }
-
   const button = document.createElement("button");
   button.className = "tomorrow-remove";
   button.type = "button";
@@ -3434,7 +3430,14 @@ function createTomorrowQueueElement(entry) {
   button.setAttribute("aria-label", `Remove ${entry.title}`);
   button.textContent = "Remove";
 
-  item.append(main, button);
+  const actions = document.createElement("div");
+  actions.className = "tomorrow-actions";
+  if (isScheduledTomorrowQueueItem(entry)) {
+    actions.append(createScheduledBadge("tomorrow-badge"));
+  }
+  actions.append(button);
+
+  item.append(main, actions);
   return item;
 }
 
