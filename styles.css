@@ -1400,12 +1400,19 @@ button:focus-visible {
   background: color-mix(in srgb, var(--accent) 14%, var(--line));
 }
 
-.task-repeat-badge {
+.task-badge-group {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   justify-self: end;
+  gap: 5px;
+}
+
+.task-badge {
+  display: inline-flex;
   max-width: 86px;
   min-height: 18px;
+  align-items: center;
   border-radius: 999px;
   background: color-mix(in srgb, var(--accent) 12%, var(--line));
   color: var(--accent-strong);
@@ -2951,7 +2958,11 @@ body.is-compact .task-title {
   font-size: 0.82rem;
 }
 
-body.is-compact .task-repeat-badge {
+body.is-compact .task-badge-group {
+  gap: 4px;
+}
+
+body.is-compact .task-badge {
   max-width: 74px;
   min-height: 16px;
   padding: 0 5px;

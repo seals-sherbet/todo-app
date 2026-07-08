@@ -32,7 +32,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.19";
+const appVersion = "0.2.20";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -3879,9 +3879,6 @@ function createTaskElement(task, list, variant = "") {
 
   const meta = document.createElement("div");
   meta.className = "task-meta";
-  if (isScheduledTask(task)) {
-    meta.append(createScheduledBadge("pill scheduled"));
-  }
   if (list.showDetails) {
     meta.append(createPriorityPill(task.priority));
 
@@ -3889,7 +3886,7 @@ function createTaskElement(task, list, variant = "") {
       meta.append(createDuePill(task.due));
     }
   }
-  const repeatBadge = task.repeat?.enabled ? createRepeatBadge(task.repeat) : null;
+  const badgeGroup = createTaskBadgeGroup(task);
 
   if (isEditing) {
     body.append(createTaskRenameForm(task, list));
@@ -3904,13 +3901,28 @@ function createTaskElement(task, list, variant = "") {
   }
 
   item.append(dragHandle, check, body);
-  if (repeatBadge) {
-    item.append(repeatBadge);
+  if (badgeGroup) {
+    item.append(badgeGroup);
   }
   if (isMenuOpen("task", list.id, task.id)) {
     item.append(createTaskMenu(task, list));
   }
   return item;
+}
+
+function createTaskBadgeGroup(task) {
+  const badges = document.createElement("div");
+  badges.className = "task-badge-group";
+
+  if (isScheduledTask(task)) {
+    badges.append(createScheduledBadge("task-badge task-scheduled-badge"));
+  }
+
+  if (task.repeat?.enabled) {
+    badges.append(createRepeatBadge(task.repeat));
+  }
+
+  return badges.childElementCount > 0 ? badges : null;
 }
 
 function createField(labelText, control) {
@@ -4397,7 +4409,7 @@ function formatRepeatLabel(repeat) {
 
 function createRepeatBadge(repeat) {
   const badge = document.createElement("span");
-  badge.className = "task-repeat-badge";
+  badge.className = "task-badge task-repeat-badge";
   badge.textContent = formatRepeatBadgeLabel(repeat);
   badge.title = formatRepeatLabel(repeat);
   return badge;
@@ -6856,6 +6868,7 @@ function getTomorrowDateKey(date = getSandboxDate()) {
 }
 
 function getSandboxDate() {
+  if (!sandboxDateEnabled) return new Date();
   return parseDateKey(sandboxTodayDateKey) || new Date();
 }
 

@@ -33,6 +33,22 @@ The active working path is `/Users/mobi/Documents/Projects/todo-app`.
 - The user does not need another browser verification when they explicitly say to push something live, unless there is a clear reason.
 - Keep the UI clean, small, and quiet. Avoid bulky panels and avoid cluttering list cards.
 
+## Live Version Bump Checklist
+
+Before any live commit/push, explicitly check whether the app version/cache should be bumped. The answer is usually yes for any change that affects `index.html`, `app.js`, `styles.css`, `sw.js`, or visible behavior.
+
+Update all matching version references together:
+
+- `app.js`: `const appVersion = "...";`
+- `index.html`: `styles.css?v=...` and `app.js?v=...`
+- `sw.js`: `tasks-cache-v...`, `styles.css?v=...`, and `app.js?v=...`
+
+Use this check before committing live changes:
+
+`rg -n "tasks-cache-v|styles.css\\?v=|app.js\\?v=|const appVersion" index.html app.js sw.js`
+
+If the user explicitly says to leave the version alone, note that in the final answer and in project memory/history. Otherwise, include the version bump in the same live commit so iPhone/Mac Home Screen installs and service-worker caches refresh predictably.
+
 ## App Shape
 
 This is a todo PWA for Mac/iPhone with:
@@ -48,6 +64,15 @@ This is a todo PWA for Mac/iPhone with:
 - Tomorrow queue rollover.
 - Weekend mode / 5-day versus 7-day queue behavior.
 - Local sandbox versions for experiments.
+
+## Native iOS / Widgets Direction
+
+- Current product direction: start and continue with the PWA, then consider native iOS later if the PWA hits a real platform limit.
+- A native iOS switch becomes more worth it when the user wants real WidgetKit widgets, Lock Screen widgets, App Intents/Shortcuts/Siri integration, share extensions, richer notification actions, haptics, background refresh, App Store/TestFlight distribution, or a more fully native daily-use feel.
+- PWA advantages: one codebase, fast deploys, no App Review, no annual Apple Developer Program fee, and a good fit for a personal Mac/iPhone Home Screen todo app.
+- PWA drawbacks: Home Screen install friction, Safari/iOS web quirks, limited background behavior and OS integration, no App Store listing, and no true native iOS widgets.
+- Cost/distribution note as of 2026-06-19: a free Apple Account can be used with Xcode to prototype/install on personal devices, but it is limited and provisioning is short-lived. A paid Apple Developer Program membership is the reliable path for TestFlight, App Store distribution, and some native capabilities; fee waivers are generally for eligible nonprofit, educational, and government entities.
+- Widget-specific idea: prototype a tiny SwiftUI app plus WidgetKit widget first with free Xcode signing. If the widget only fetches from Supabase, it may avoid some local app/widget storage sharing. If it needs robust shared local state between app and widget, expect native entitlements such as App Groups and likely paid-account friction.
 
 ## Design Direction
 
@@ -119,6 +144,19 @@ Check `future-cleanups.md` before starting future work. Recent items include:
   - Footer tabs now share one compact utility-row aesthetic across Tomorrow, Scheduled, On hold, and Projects.
   - Projects in the footer use a compact task-row renderer instead of a full list card.
   - Localhost builds show `Simulate Tomorrow` and `Reset Date` controls for testing rollover paths; production hides them.
+- 2026-06-19: Shipped Tomorrow rollover hardening and a blanket mobile focus zoom guard.
+  - Tomorrow queue rollover now writes deleted/tombstone markers for due queue items after they roll, so a stale device should not reintroduce the same Tomorrow items after another device has already moved them into Today.
+  - Legacy string-based Tomorrow queue items infer their target date from `lastTodayDateKey`, helping older saved queue formats roll correctly after a missed midnight update.
+  - Mobile/coarse-pointer text controls now get a final project-wide `16px` font-size guard in `styles.css` to prevent iOS/Safari focus zoom across footer lists and future text inputs.
+  - Verified with `node --check app.js`, `git diff --check`, and a mobile viewport computed-style check for Today, Tomorrow, Scheduled, On hold, Projects, and sync inputs.
+  - Important: this live commit did not bump the version/cache from `0.2.17`; the user chose to leave it for now. Future live work should revisit the version bump checklist.
+  - Live commit: `baf0478 Harden tomorrow rollover and mobile focus`.
+- 2026-07-08: Fixed the production frozen-date bug and bumped version `0.2.19` -> `0.2.20`.
+  - Root cause: the sandbox-date feature (added in `0.2.17`) made `getSandboxDate()` always parse `sandboxTodayDateKey`, which is set once at page load and never refreshed in production. Long-lived PWA sessions (iOS Home Screen) kept yesterday's date until a full reload: header date, midnight rollover, and `getCurrentAppTimestamp()` were all frozen.
+  - Fix: `getSandboxDate()` now returns `new Date()` when `sandboxDateEnabled` is false; sandbox behavior on localhost/file is unchanged.
+  - Side effect worth watching: the frozen date also produced stale `updatedAt` timestamps via `getCurrentAppTimestamp()`, a likely contributor to the checkbox bounce-back issue in `future-cleanups.md`.
+  - Possible future hardening: a once-a-minute date-key check plus a `pageshow` listener as backup for the single midnight `setTimeout`.
+  - Note: the working tree also contained uncommitted task badge group refactor changes (`app.js`, `styles.css`) from a prior session.
 
 ## Testing Notes
 
