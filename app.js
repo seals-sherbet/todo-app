@@ -32,7 +32,7 @@ const taskFormPointerGraceMs = 800;
 const undoTimeoutMs = 8000;
 const pullToSyncStartZone = 140;
 const pullToSyncThreshold = 70;
-const appVersion = "0.2.20";
+const appVersion = "0.2.21";
 
 const listForm = document.querySelector("#listForm");
 const listName = document.querySelector("#listName");
@@ -227,6 +227,8 @@ let syncDialogOpen = false;
 let syncPendingAllShared = false;
 let syncPendingSharedListIds = new Set();
 let syncPendingTaskOrderListIds = new Set();
+const syncDirtyTaskStamps = new Map();
+let syncPushDirtySnapshot = null;
 let syncLastErrorDetails = "";
 let pendingOtpEmail = "";
 let undoAction = null;
@@ -1765,9 +1767,11 @@ async function pushRemoteState() {
   const updatedAt = new Date().toISOString();
   const sharedLists = getPendingSharedLists();
   const syncTaskOrderListIds = new Set(syncPendingTaskOrderListIds);
+  syncPushDirtySnapshot = new Map(syncDirtyTaskStamps);
 
   const privateError = await pushPrivateState(getPrivateLists(lists), tomorrowQueue, scheduledQueue, onHoldQueue, updatedAt);
   if (privateError) {
+    syncPushDirtySnapshot = null;
     reportSyncError("Private sync", privateError);
     return;
   }
@@ -1776,11 +1780,14 @@ async function pushRemoteState() {
     syncTaskOrderListIds
   });
   if (sharedError) {
+    syncPushDirtySnapshot = null;
     clearPendingSharedSync();
     reportSyncError("Shared list sync", sharedError);
     return;
   }
 
+  clearConfirmedDirtyTaskStamps(syncPushDirtySnapshot);
+  syncPushDirtySnapshot = null;
   clearPendingSharedSync();
   syncLastRemoteUpdatedAt = updatedAt;
   markSyncSuccess();
@@ -1919,6 +1926,8 @@ function resetInMemoryTaskStateForAccountBoundary() {
   syncPendingAllShared = false;
   syncPendingSharedListIds.clear();
   syncPendingTaskOrderListIds.clear();
+  syncDirtyTaskStamps.clear();
+  syncPushDirtySnapshot = null;
 }
 
 async function fetchPrivateDocument() {
@@ -2214,12 +2223,28 @@ async function syncSharedTasks(list, updatedAt, options = {}) {
   const existingRowsById = new Map((existingResult.data || []).map((row) => [row.id, row]));
   const nextTaskRows = preserveRemoteTaskPositions(taskRows, existingResult.data || [], syncTaskOrder);
   const tombstoneRows = getSharedDeletionTombstones(list).map((tombstone, index) => deletedTaskToRow(tombstone, taskRows.length + index));
-  const rowsToUpsert = [...nextTaskRows, ...tombstoneRows].filter((row) => shouldPushTaskRow(row, existingRowsById.get(row.id)));
+  const rowsToUpsert = [...nextTaskRows, ...tombstoneRows]
+    .map((row) => {
+      if (shouldPushTaskRow(row, existingRowsById.get(row.id))) return row;
+      // A newer remote timestamp (often a bulk reorder stamp from another device) would
+      // silently swallow this local edit. Dirty rows carry direct user intent, so re-stamp
+      // them to now and push anyway instead of treating the skip as saved.
+      if (!isDirtyTaskRow(row)) return null;
+      return restampDirtyTaskRow(list, row);
+    })
+    .filter(Boolean);
 
   if (rowsToUpsert.length > 0) {
     for (const row of rowsToUpsert) {
-      const taskError = await upsertTaskRow(row);
-      if (taskError) return taskError;
+      const wasDirty = isDirtyTaskRow(row);
+      let result = await upsertTaskRow(row);
+      if (!result.error && result.skipped && wasDirty) {
+        result = await upsertTaskRow(restampDirtyTaskRow(list, row));
+      }
+      if (result.error) return result.error;
+      if (result.skipped && wasDirty) {
+        return { message: `Task "${row.title}" was skipped by a newer remote change. Refresh sync and retry.` };
+      }
     }
   }
 
@@ -2252,6 +2277,8 @@ function preserveRemoteTaskPositions(taskRows, existingRows = [], syncTaskOrder 
   });
 }
 
+// Returns { error, skipped }. `skipped` means the timestamp-guarded RPC declined the write
+// because the remote row was newer; callers must not treat a skipped row as saved.
 async function upsertTaskRow(row) {
   const result = await syncClient.rpc("upsert_task_if_newer", {
     target_id: row.id,
@@ -2268,9 +2295,9 @@ async function upsertTaskRow(row) {
     target_repeat: row.repeat
   });
 
-  if (!result.error) return null;
+  if (!result.error) return { error: null, skipped: wasUpsertSkipped(result) };
   if (isMissingRepeatColumnError(result.error)) return upsertLegacyTaskRow(row);
-  if (!isMissingRpcError(result.error)) return result.error;
+  if (!isMissingRpcError(result.error)) return { error: result.error, skipped: false };
 
   const fallbackResult = await syncClient
     .from("tasks")
@@ -2278,7 +2305,7 @@ async function upsertTaskRow(row) {
       onConflict: "id"
     });
   if (isMissingRepeatColumnError(fallbackResult.error)) return upsertLegacyTaskRow(row);
-  return fallbackResult.error;
+  return { error: fallbackResult.error, skipped: false };
 }
 
 async function upsertLegacyTaskRow(row) {
@@ -2297,15 +2324,35 @@ async function upsertLegacyTaskRow(row) {
     target_device_id: legacyRow.device_id
   });
 
-  if (!result.error) return null;
-  if (!isMissingRpcError(result.error)) return result.error;
+  if (!result.error) return { error: null, skipped: wasUpsertSkipped(result) };
+  if (!isMissingRpcError(result.error)) return { error: result.error, skipped: false };
 
   const fallbackResult = await syncClient
     .from("tasks")
     .upsert(legacyRow, {
       onConflict: "id"
     });
-  return fallbackResult.error;
+  return { error: fallbackResult.error, skipped: false };
+}
+
+// The upsert RPC only RETURNS the row id when the guarded write actually happened.
+function wasUpsertSkipped(result) {
+  return Array.isArray(result.data) && result.data.length === 0;
+}
+
+function isDirtyTaskRow(row) {
+  return syncDirtyTaskStamps.get(row.id) === row.updated_at;
+}
+
+function restampDirtyTaskRow(list, row) {
+  const restampedAt = new Date().toISOString();
+  const task = list.tasks.find((item) => item.id === row.id);
+  if (task) {
+    markTaskUpdated(task, restampedAt);
+  } else {
+    markTaskDirty(row.id, restampedAt);
+  }
+  return { ...row, updated_at: restampedAt };
 }
 
 function isMissingRpcError(error) {
@@ -5472,7 +5519,36 @@ function markListUpdated(list, updatedAt = new Date().toISOString()) {
 }
 
 function markTaskUpdated(task, updatedAt = new Date().toISOString()) {
-  if (task) task.updatedAt = updatedAt;
+  if (!task) return;
+  task.updatedAt = updatedAt;
+  markTaskDirty(task.id, updatedAt);
+}
+
+// Dirty markers protect local task edits (checkbox, reorder, rename, repeat) from being
+// overwritten by remote refresh until their push is confirmed. Cleared in pushRemoteState.
+function markTaskDirty(taskId, updatedAt) {
+  if (!taskId || syncApplyingRemoteState) return;
+  syncDirtyTaskStamps.set(taskId, updatedAt);
+  if (syncPushDirtySnapshot) syncPushDirtySnapshot.set(taskId, updatedAt);
+}
+
+// Returns the locally dirty version of a task pair during merges, or null when neither
+// side matches the pending local stamp (then normal timestamp merging applies).
+function getDirtyTaskVersion(firstTask, secondTask) {
+  const dirtyStamp = syncDirtyTaskStamps.get(firstTask.id);
+  if (!dirtyStamp) return null;
+  if (firstTask.updatedAt === dirtyStamp && secondTask.updatedAt !== dirtyStamp) return firstTask;
+  if (secondTask.updatedAt === dirtyStamp && firstTask.updatedAt !== dirtyStamp) return secondTask;
+  return null;
+}
+
+function clearConfirmedDirtyTaskStamps(snapshot) {
+  if (!snapshot) return;
+  snapshot.forEach((stamp, taskId) => {
+    if (syncDirtyTaskStamps.get(taskId) === stamp) {
+      syncDirtyTaskStamps.delete(taskId);
+    }
+  });
 }
 
 function markSharedListOrderUpdated(updatedAt = new Date().toISOString()) {
@@ -5577,6 +5653,13 @@ function mergeTasks(primaryTasks = [], secondaryTasks = []) {
 function mergeTaskState(existing, incoming) {
   const existingTask = normalizeTask(existing);
   const incomingTask = normalizeTask(incoming);
+  const dirtyVersion = getDirtyTaskVersion(existingTask, incomingTask);
+  if (dirtyVersion) {
+    return {
+      ...dirtyVersion,
+      createdAt: getEarliestDateValue(existingTask.createdAt, incomingTask.createdAt) || dirtyVersion.createdAt
+    };
+  }
   const winner = isTimestampNewer(incomingTask.updatedAt, existingTask.updatedAt) ? incomingTask : existingTask;
   const fallback = winner.id === existingTask.id && winner.updatedAt === existingTask.updatedAt ? incomingTask : existingTask;
 

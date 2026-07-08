@@ -156,7 +156,13 @@ Check `future-cleanups.md` before starting future work. Recent items include:
   - Fix: `getSandboxDate()` now returns `new Date()` when `sandboxDateEnabled` is false; sandbox behavior on localhost/file is unchanged.
   - Side effect worth watching: the frozen date also produced stale `updatedAt` timestamps via `getCurrentAppTimestamp()`, a likely contributor to the checkbox bounce-back issue in `future-cleanups.md`.
   - Possible future hardening: a once-a-minute date-key check plus a `pageshow` listener as backup for the single midnight `setTimeout`.
-  - Note: the working tree also contained uncommitted task badge group refactor changes (`app.js`, `styles.css`) from a prior session.
+  - Note: the working tree also contained uncommitted task badge group refactor changes (`app.js`, `styles.css`) from a prior session; committed together as `d51a490 Fix frozen production date and group task badges`.
+- 2026-07-08: Shipped checkbox bounce-back fix via dirty-task tracking in live version `0.2.21`.
+  - Root cause confirmed: `markTaskOrderUpdated` re-stamps every task in a list on reorder/un-complete, so another device's reorder timestamp beats a slightly older completion; `upsert_task_if_newer` then silently skips the completion write (empty `returning` result) while the UI shows `Synced`, and the next refresh merge restores the remote open state.
+  - Fix: `syncDirtyTaskStamps` map records `taskId -> updatedAt` in `markTaskUpdated`; `mergeTaskState` lets the matching dirty version win merges; `syncSharedTasks` re-stamps dirty rows blocked by newer remote timestamps to now and pushes anyway; `upsertTaskRow` now returns `{ error, skipped }` (skip detected via empty RPC result) with a one-shot restamp retry; markers are cleared in `pushRemoteState` only after both pushes succeed, snapshot-guarded so mid-push edits stay protected.
+  - Verified with `node --check` and a 7-case merge-logic harness (reproduced old bounce-back, confirmed dirty protection both directions, snapshot-guarded clearing, stale-marker fallback).
+  - Version bumped `0.2.20` -> `0.2.21` across `app.js`, `index.html`, and `sw.js`.
+  - Real-device verification still worth doing: complete tasks on one device right after reordering the same shared list on another.
 
 ## Testing Notes
 
